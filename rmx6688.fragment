@@ -61,12 +61,16 @@ CONFIG_SERIAL_8250_CONSOLE=y
 CONFIG_SERIAL_8250_MT6577=y
 CONFIG_SERIAL_OF_PLATFORM=y
 
-# --- USB-C gadget serial console ------------------------------------------
-# The debugging console to a PC rides the USB-C port as a CDC-ACM serial
-# gadget: UART0's pads need a factory cable on retail hardware, so this is the
-# only practical serial path.  Everything binds via the generic compatibles
-# ("mediatek,mtu3" / "mediatek,xsphy") -- no driver changes, the same route as
-# the MT6895 xaga port.
+# --- USB-C gadget network console (RNDIS) ---------------------------------
+# Serial-over-USB (#28-#38) parked 2026-09-05: kernel-side gadget stack was
+# proven healthy but no host ever enumerated -- the open break is physical
+# (eUSB2 chain / i2c6 domain power), class-independent.  Trying the class
+# swap next: a network gadget instead of CDC-ACM.  Windows picks the RNDIS
+# configuration with its inbox rndismp driver, no driver install needed.
+#
+# Everything binds via the generic compatibles ("mediatek,mtu3" /
+# "mediatek,xsphy") -- no driver changes, the same route as the MT6895 xaga
+# port.
 #
 # Gadget-only mtu3 build: no host stack, and mtu3_probe() then forces
 # dr_mode=PERIPHERAL, which keeps probe off the vbus-supply and role-switch
@@ -77,14 +81,11 @@ CONFIG_USB_GADGET=y
 CONFIG_USB_MTU3=y
 CONFIG_USB_MTU3_GADGET=y
 CONFIG_PHY_MTK_XSPHY=y
-# Legacy g_serial composite, built in: binds whatever UDC appears and exposes
-# /dev/ttyGS0 with zero userspace setup.  use_acm defaults to true, so the
-# wire descriptors are CDC-ACM and Windows/Linux need no driver.
-CONFIG_USB_G_SERIAL=y
-# console=ttyGS0 support.  Registered exactly once (on line 0 allocation at
-# gadget bind) -- the xaga console stall needed repeated re-registration and
-# does not apply.
-CONFIG_U_SERIAL_CONSOLE=y
+# Legacy g_ether composite, built in: CDC-ECM config plus a second RNDIS
+# config (USB_ETH_RNDIS).  Binds the UDC with zero userspace setup, exposes
+# usbN on the gadget side once the host configures the device.
+CONFIG_USB_ETH=y
+CONFIG_USB_ETH_RNDIS=y
 CONFIG_REGULATOR=y
 CONFIG_REGULATOR_FIXED_VOLTAGE=y
 
@@ -130,18 +131,17 @@ CONFIG_ARM64_EMBEDDED_DTB_SOURCE="arch/arm64/boot/dts/mediatek/mt6991-realme-rmx
 # Add earlycon=uart8250,mmio32,0x16000000 if you have a UART cable, and
 # initcall_debug if you need to find where a silent hang happens.
 #
-# console=ttyGS0 (the USB-C gadget serial console) comes first so that
-# /dev/console stays on tty0 below: printk reaches both consoles anyway.  The
-# gadget console only starts streaming once the host enumerates the CDC-ACM
-# port, ~2 s into a boot with the cable plugged in; init replays the earlier
-# ring over /dev/ttyGS0 at its first heartbeat, so the PC sees everything.
+# Serial-over-USB parked (2026-09-05): the RNDIS round (#40) has no gadget
+# console; the only console is tty0 on the framebuffer.  If the host
+# enumerates the RNDIS device, init logs "usb: host enumerated" on the panel
+# (udc state -> "configured"); later rounds can add netconsole over usbN.
 #
 # clk_ignore_unused is required once the MT8196 TOPCKGEN driver registers its
 # full clock table: "clk: Disabling unused clocks" would otherwise turn off
 # every gate the bootloader left enabled but no mainline driver claims yet --
 # including, quite possibly, the display pipeline the framebuffer prints
 # through.  With the flag the kernel leaves hardware exactly as handed over.
-CONFIG_CMDLINE="console=ttyGS0 console=tty0 ignore_loglevel no_console_suspend panic=0 nokaslr clk_ignore_unused"
+CONFIG_CMDLINE="console=tty0 ignore_loglevel no_console_suspend panic=0 nokaslr clk_ignore_unused"
 CONFIG_CMDLINE_FORCE=y
 
 # --- Build hygiene on-device ---------------------------------------------
