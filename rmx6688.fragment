@@ -86,6 +86,14 @@ CONFIG_PHY_MTK_XSPHY=y
 # usbN on the gadget side once the host configures the device.
 CONFIG_USB_ETH=y
 CONFIG_USB_ETH_RNDIS=y
+# Kernel log to the PC over the RNDIS link (#41): once the host enumerates the
+# gadget and usb0 appears, init addresses it statically (192.168.42.129/24)
+# and brings up a dynamic netconsole target (configfs) streaming every console
+# line -- panics included -- as UDP to 192.168.42.100:6666.  Built in because
+# there is no userspace to load modules.
+CONFIG_NETCONSOLE=y
+CONFIG_NETCONSOLE_DYNAMIC=y
+CONFIG_CONFIGFS_FS=y
 CONFIG_REGULATOR=y
 CONFIG_REGULATOR_FIXED_VOLTAGE=y
 
@@ -134,7 +142,8 @@ CONFIG_ARM64_EMBEDDED_DTB_SOURCE="arch/arm64/boot/dts/mediatek/mt6991-realme-rmx
 # Serial-over-USB parked (2026-09-05): the RNDIS round (#40) has no gadget
 # console; the only console is tty0 on the framebuffer.  If the host
 # enumerates the RNDIS device, init logs "usb: host enumerated" on the panel
-# (udc state -> "configured"); later rounds can add netconsole over usbN.
+# (udc state -> "configured"); the #41 round then streams the kernel console
+# over the link itself (netconsole -> 192.168.42.100:6666, see below).
 #
 # clk_ignore_unused is required once the MT8196 TOPCKGEN driver registers its
 # full clock table: "clk: Disabling unused clocks" would otherwise turn off
