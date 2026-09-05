@@ -1,0 +1,152 @@
+# Kconfig fragment for realme GT7 (RMX6688) / MT6991 mainline bring-up.
+# Merged on top of arch/arm64/configs/defconfig by build.sh.
+#
+# Theme: everything needed to see a log on the panel must be BUILT IN.  The
+# arm64 defconfig ships DRM, pstore and friends as modules, and there is no
+# rootfs to load modules from on a first boot.
+
+# --- Console on the bootloader's framebuffer -------------------------------
+# FB_SIMPLE binds the /chosen/framebuffer node the bootloader left scanning
+# out.  It is mutually exclusive with DRM_SIMPLEDRM, so that stays off.
+CONFIG_FB=y
+CONFIG_FB_SIMPLE=y
+# CONFIG_DRM_SIMPLEDRM is not set
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
+# Deferred takeover would hold back the log until userspace writes to the
+# console -- exactly the output we are trying to see.  Keep it off.
+# CONFIG_FRAMEBUFFER_CONSOLE_DEFERRED_TAKEOVER is not set
+CONFIG_FONT_SUPPORT=y
+CONFIG_FONT_8x16=y
+
+# The boot logo doubles as a one-glance test of the framebuffer parameters: a
+# clean Tux means width/height/stride/format are all correct.  Skewed or
+# colour-swapped penguins point straight at which one is wrong.
+CONFIG_LOGO=y
+CONFIG_LOGO_LINUX_CLUT224=y
+
+# --- Do not let the bootloader's watchdog reset us ------------------------
+# The bootloader arms TOPRGU before jumping to the kernel.  This driver spots
+# the already-running watchdog and the watchdog core then pets it from a
+# kernel worker, which is what keeps the phone alive past the first seconds.
+CONFIG_WATCHDOG=y
+CONFIG_WATCHDOG_SYSFS=y
+CONFIG_MEDIATEK_WATCHDOG=y
+
+# --- Persistent log across reset (the real bring-up debug channel) --------
+# Built in, not modular: a boot that dies before userspace still has to be
+# able to record why.  Reboot into Android afterwards and read
+# /sys/fs/pstore/console-ramoops-0.  Compression off so the log stays
+# readable as plain text.
+CONFIG_PSTORE=y
+CONFIG_PSTORE_RAM=y
+CONFIG_PSTORE_CONSOLE=y
+CONFIG_PSTORE_PMSG=y
+# CONFIG_PSTORE_COMPRESS is not set
+
+# --- Printk ring ----------------------------------------------------------
+# 512 KiB ring instead of the 128 KiB default.  The UFS driver alone can log
+# 100 KiB+ during probe, which would otherwise wrap away the early records
+# (the ramoops probe's own lines at ~0.02s) before init reads /dev/kmsg back.
+CONFIG_LOG_BUF_SHIFT=19
+
+# --- Serial ---------------------------------------------------------------
+# UART0 exists and the bootloader uses it, but on retail hardware the pads
+# come out only through the USB connector with a factory cable.  Built in so
+# that earlycon=uart8250,mmio32,0x16000000 works for anyone who has one.
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_MT6577=y
+CONFIG_SERIAL_OF_PLATFORM=y
+
+# --- USB-C gadget serial console ------------------------------------------
+# The debugging console to a PC rides the USB-C port as a CDC-ACM serial
+# gadget: UART0's pads need a factory cable on retail hardware, so this is the
+# only practical serial path.  Everything binds via the generic compatibles
+# ("mediatek,mtu3" / "mediatek,xsphy") -- no driver changes, the same route as
+# the MT6895 xaga port.
+#
+# Gadget-only mtu3 build: no host stack, and mtu3_probe() then forces
+# dr_mode=PERIPHERAL, which keeps probe off the vbus-supply and role-switch
+# paths (vusb33-supply is still mandatory and comes from the board DTS's
+# fixed regulator).
+CONFIG_USB_SUPPORT=y
+CONFIG_USB_GADGET=y
+CONFIG_USB_MTU3=y
+CONFIG_USB_MTU3_GADGET=y
+CONFIG_PHY_MTK_XSPHY=y
+# Legacy g_serial composite, built in: binds whatever UDC appears and exposes
+# /dev/ttyGS0 with zero userspace setup.  use_acm defaults to true, so the
+# wire descriptors are CDC-ACM and Windows/Linux need no driver.
+CONFIG_USB_G_SERIAL=y
+# console=ttyGS0 support.  Registered exactly once (on line 0 allocation at
+# gadget bind) -- the xaga console stall needed repeated re-registration and
+# does not apply.
+CONFIG_U_SERIAL_CONSOLE=y
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
+
+# --- Android /data probe (f2fs) ------------------------------------------
+# init mounts userdata (GPT partition 95 = /dev/block/by-name/userdata) to
+# list its first-level entries.  File-based encryption does not block the
+# mount or the top-level readdir -- only per-user subtrees are locked -- so
+# this works keyless; the magic check in init tells us if the phone instead
+# uses metadata encryption (whole partition dm-crypt'd, superblock hidden).
+# Mount is read-only, so Android's next boot sees an untouched filesystem.
+CONFIG_F2FS_FS=y
+CONFIG_FS_ENCRYPTION=y
+
+# --- Built-in initramfs ---------------------------------------------------
+# Self-contained rootfs so the kernel has an init to run and stays up instead
+# of panicking.  Path is filled in by build.sh.
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_INITRAMFS_COMPRESSION_NONE=y
+# The bootloader hands us vendor_boot's ramdisk too.  Without FORCE it gets
+# unpacked on top of ours and replaces /init with Android's, which then fails
+# on the missing vendor kernel it expects.  Needs CMDLINE_FORCE, which is set
+# below.
+CONFIG_INITRAMFS_FORCE=y
+
+# --- Device tree embedded in the kernel image -----------------------------
+# The bootloader's DTB lives in vendor_boot and gets dtbo overlays applied to
+# it, so replacing it in place means matching a base tree with 1360
+# /__symbols__ entries.  Linking our own tree into the image sidesteps that
+# entirely: only the boot partition has to be flashed, and the bootloader's
+# tree is used for nothing but the DRAM bank layout.
+CONFIG_ARM64_EMBEDDED_DTB=y
+CONFIG_ARM64_EMBEDDED_DTB_SOURCE="arch/arm64/boot/dts/mediatek/mt6991-realme-rmx6688.dtb"
+
+# --- Command line ---------------------------------------------------------
+# FORCE, not FROM_BOOTLOADER: the MediaTek bootloader replaces bootargs with a
+# long vendor command line that lists console=ttynull ahead of console=tty0
+# and points root= at partitions we are not using.  Overriding it gives a
+# deterministic first boot.
+#
+# panic=0 is deliberate -- on a panic the kernel stops instead of rebooting,
+# so the backtrace stays on screen to be read (and photographed).
+# Add earlycon=uart8250,mmio32,0x16000000 if you have a UART cable, and
+# initcall_debug if you need to find where a silent hang happens.
+#
+# console=ttyGS0 (the USB-C gadget serial console) comes first so that
+# /dev/console stays on tty0 below: printk reaches both consoles anyway.  The
+# gadget console only starts streaming once the host enumerates the CDC-ACM
+# port, ~2 s into a boot with the cable plugged in; init replays the earlier
+# ring over /dev/ttyGS0 at its first heartbeat, so the PC sees everything.
+#
+# clk_ignore_unused is required once the MT8196 TOPCKGEN driver registers its
+# full clock table: "clk: Disabling unused clocks" would otherwise turn off
+# every gate the bootloader left enabled but no mainline driver claims yet --
+# including, quite possibly, the display pipeline the framebuffer prints
+# through.  With the flag the kernel leaves hardware exactly as handed over.
+CONFIG_CMDLINE="console=ttyGS0 console=tty0 ignore_loglevel no_console_suspend panic=0 nokaslr clk_ignore_unused"
+CONFIG_CMDLINE_FORCE=y
+
+# --- Build hygiene on-device ---------------------------------------------
+# No openssl headers in this environment, and debug info would cost a lot of
+# build time and disk for no benefit here.
+# CONFIG_MODULE_SIG is not set
+CONFIG_DEBUG_INFO_NONE=y
+# CONFIG_DEBUG_INFO_BTF is not set

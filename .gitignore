@@ -194,3 +194,14 @@ sphinx_*/
 
 # bc language scripts (not LLVM bitcode)
 !kernel/time/timeconst.bc
+
+#
+# RMX6688 bring-up additions
+#
+# kbuild products (O=out, see build.sh)
+/out/
+# pack_boot.sh scratch: magiskboot + stock boot.img + flashable results
+/bt/
+# nested independent repo (own .git, own commits)
+/initramfs/
+*.log
