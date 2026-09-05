@@ -1,0 +1,397 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * MediaTek MT6991 (Dimensity 9400+) minimal SoC description.
+ *
+ * MT6991 is the phone-facing sibling of MT8196; the two share silicon, so
+ * the upstream MT8196 clock drivers apply here.  Register addresses and
+ * interrupt numbers below were read out of the vendor device tree exposed at
+ * /sys/firmware/fdt on a retail realme GT7.
+ *
+ * What is described so far, in bring-up order: the CPUs/PSCI/timer/GIC
+ * foundation, the TOPRGU watchdog, UART0, the clock providers feeding the
+ * UFS controller (APMIXEDSYS/TOPCKGEN/HWV/UFSCFG_AO) and the UFS host
+ * itself.  HWV is the "hardware voter" syscon that TOPCKGEN's voter-gated
+ * clocks reference.
+ * Pinctrl, power domains, display and the rest of the clock tree are still
+ * absent -- this file grows as the port progresses.
+ */
+
+#include <dt-bindings/clock/mediatek,mt8196-clock.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/reset/mediatek,mt8196-resets.h>
+
+/ {
+	compatible = "mediatek,mt6991";
+	interrupt-parent = <&gic>;
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	/*
+	 * UART0 keeps a fixed 26 MHz parent on purpose: the real baud clock
+	 * lives in the peri_ao clock domain, which is not described yet.  The
+	 * bootloader programs the divisor against 26 MHz and leaves the gate
+	 * open, so a fixed clock matching that state is exactly right.
+	 */
+	clk26m: clock-26m {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <26000000>;
+		clock-output-names = "clk26m";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* 4x Cortex-A720 @ 2.0 GHz */
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0x000>;
+			enable-method = "psci";
+			capacity-dmips-mhz = <714>;
+			#cooling-cells = <2>;
+		};
+
+		cpu1: cpu@100 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0x100>;
+			enable-method = "psci";
+			capacity-dmips-mhz = <714>;
+			#cooling-cells = <2>;
+		};
+
+		cpu2: cpu@200 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0x200>;
+			enable-method = "psci";
+			capacity-dmips-mhz = <714>;
+			#cooling-cells = <2>;
+		};
+
+		cpu3: cpu@300 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0x300>;
+			enable-method = "psci";
+			capacity-dmips-mhz = <714>;
+			#cooling-cells = <2>;
+		};
+
+		/* 3x Cortex-X4 @ 2.85 GHz */
+		cpu4: cpu@400 {
+			device_type = "cpu";
+			compatible = "arm,cortex-x4";
+			reg = <0x400>;
+			enable-method = "psci";
+			capacity-dmips-mhz = <1024>;
+			#cooling-cells = <2>;
+		};
+
+		cpu5: cpu@500 {
+			device_type = "cpu";
+			compatible = "arm,cortex-x4";
+			reg = <0x500>;
+			enable-method = "psci";
+			capacity-dmips-mhz = <1024>;
+			#cooling-cells = <2>;
+		};
+
+		cpu6: cpu@600 {
+			device_type = "cpu";
+			compatible = "arm,cortex-x4";
+			reg = <0x600>;
+			enable-method = "psci";
+			capacity-dmips-mhz = <1024>;
+			#cooling-cells = <2>;
+		};
+
+		/* 1x Cortex-X925 @ 3.73 GHz */
+		cpu7: cpu@700 {
+			device_type = "cpu";
+			compatible = "arm,cortex-x925";
+			reg = <0x700>;
+			enable-method = "psci";
+			capacity-dmips-mhz = <937>;
+			#cooling-cells = <2>;
+		};
+
+		cpu-map {
+			cluster0 {
+				core0 { cpu = <&cpu0>; };
+				core1 { cpu = <&cpu1>; };
+				core2 { cpu = <&cpu2>; };
+				core3 { cpu = <&cpu3>; };
+			};
+
+			cluster1 {
+				core0 { cpu = <&cpu4>; };
+				core1 { cpu = <&cpu5>; };
+				core2 { cpu = <&cpu6>; };
+			};
+
+			cluster2 {
+				core0 { cpu = <&cpu7>; };
+			};
+		};
+	};
+
+	psci {
+		compatible = "arm,psci-1.0";
+		method = "smc";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_PPI 14 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_PPI 11 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_PPI 10 IRQ_TYPE_LEVEL_HIGH 0>;
+		clock-frequency = <13000000>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		dma-ranges = <0x0 0x0 0x0 0x0 0x4 0x0>;
+
+		gic: interrupt-controller@c400000 {
+			compatible = "arm,gic-v3";
+			#interrupt-cells = <4>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			#redistributor-regions = <1>;
+			interrupt-parent = <&gic>;
+			interrupt-controller;
+			/* GICD, then 8 GICR frames of 0x40000 each */
+			reg = <0 0x0c400000 0 0x40000>,
+			      <0 0x0c440000 0 0x200000>;
+			interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH 0>;
+		};
+
+		/*
+		 * Clock tree for the UFS controller.  MT6991 and MT8196 share
+		 * silicon, so the upstream MT8196 clock drivers are used; the
+		 * register block addresses come from the vendor FDT.  The PLLs
+		 * (mainpll, univpll, ...) live in APMIXEDSYS, TOPCKGEN folds
+		 * them down to the "ufs" and "aes_ufsfde" muxes the gates
+		 * below are parented on, and UFSCFG_AO carries the per-interface
+		 * gates plus the reset controller the UFS host uses.
+		 *
+		 * TOPCKGEN also contains "hardware voter" clock gates (e.g. the
+		 * UART mux) whose enable path is arbitrated by a separate
+		 * always-on block, the "hwv" syscon at 0x14500000
+		 * (mediatek,mt6991-hwv in the vendor tree).  The upstream driver
+		 * looks that block up through the "mediatek,hardware-voter"
+		 * phandle; without it, registration of the first voter clock
+		 * fails with -ENXIO and the whole provider -- including the UFS
+		 * muxes -- never comes up.  The clocks UFS actually uses
+		 * ("ufs", "aes_ufsfde", and the ufscfg_ao gates) are plain
+		 * fenc/setclr type, so the voter registers are only referenced
+		 * at registration time, never touched by the UFS path.
+		 */
+		hwv: syscon@14500000 {
+			compatible = "mediatek,mt6991-hwv", "syscon";
+			reg = <0 0x14500000 0 0x3000>;
+		};
+
+		apmixedsys: clock-controller@10000800 {
+			compatible = "mediatek,mt8196-apmixedsys";
+			reg = <0 0x10000800 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
+		topckgen: clock-controller@10000000 {
+			compatible = "mediatek,mt8196-topckgen";
+			reg = <0 0x10000000 0 0x800>;
+			mediatek,hardware-voter = <&hwv>;
+			#clock-cells = <1>;
+		};
+
+		ufscfg_ao: clock-controller@168a0000 {
+			compatible = "mediatek,mt8196-ufscfg-ao";
+			reg = <0 0x168a0000 0 0x1000>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+		};
+
+		/*
+		 * TOPRGU.  The bootloader arms this watchdog before entering the
+		 * kernel, so the node is mandatory: mtk_wdt_init() notices
+		 * WDT_MODE_EN is already set, flags the device WDOG_HW_RUNNING,
+		 * and the watchdog core then pets it from a kernel worker.
+		 * Without this node nothing feeds the hardware and the phone
+		 * resets a few seconds into boot.
+		 */
+		watchdog: watchdog@1c010000 {
+			compatible = "mediatek,mt6991-wdt", "mediatek,mt6589-wdt";
+			reg = <0 0x1c010000 0 0x1000>;
+		};
+
+		/*
+		 * UART0.  Reachable only through the USB connector with a
+		 * factory cable on retail hardware, so this is a debugging
+		 * convenience rather than the primary console -- see the
+		 * framebuffer in the board DTS for that.
+		 */
+		uart0: serial@16000000 {
+			compatible = "mediatek,mt6577-uart";
+			reg = <0 0x16000000 0 0x1000>;
+			interrupts = <GIC_SPI 137 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&clk26m>, <&clk26m>;
+			clock-names = "baud", "bus";
+			status = "okay";
+		};
+
+		/*
+		 * UFS host controller.  Compatible is the generic MTK one the
+		 * upstream ufs-mediatek driver binds; like the vendor tree we
+		 * rely on the bootloader having left the block powered and the
+		 * ATF SMC interface handling mphy/refclk/mtcmos control.
+		 *
+		 * The register window must cover the vendor register block the
+		 * driver maps on top of the standard UFSHCI registers: REG_UFS_EXTREG
+		 * at 0x2100, REG_UFS_MPHYCTRL 0x2200, REG_UFS_MTK_IP_VER 0x2240 and
+		 * the MTK SQD/CQD block at 0x2800-0x2824.  0x2a00 is the size the
+		 * vendor tree declares (and 0x2a00 >= 0x2974, the last SQD
+		 * register with the per-queue stride).  An undersized window put
+		 * the 0x2240 read on an unmapped vmalloc guard page and oopsed
+		 * ufs_mtk_init with a level-3 translation fault.
+		 *
+		 * The 14 clocks mirror the vendor node: the topckgen "ufs" and
+		 * "aes_ufsfde" muxes feed the digital core, and the eight
+		 * ufscfg_ao gates feed the Unipro lanes, HCI and AES.  The
+		 * vendor's clk-scaling muxes (ufs_sel_min_src & friends) do not
+		 * exist upstream, so the driver logs "Clk-scaling not ready"
+		 * and runs at the bootloader-selected parent -- fine for
+		 * bring-up.  dvfsrc-vcore is likewise absent; both are
+		 * non-fatal.  No vcc/vccq supplies: the PMIC rails have no
+		 * mainline driver yet and stay at their bootloader state.
+		 */
+		ufshci: ufshci@16810000 {
+			compatible = "mediatek,mt8183-ufshci";
+			reg = <0 0x16810000 0 0x2a00>;
+			interrupts = <GIC_SPI 320 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 329 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 330 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 331 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 332 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 333 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 334 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 335 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 336 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&topckgen CLK_TOP_UFS>,
+				 <&topckgen CLK_TOP_AES_UFSFDE>,
+				 <&ufscfg_ao CLK_UFSAO_UNIPRO_TX_SYM>,
+				 <&ufscfg_ao CLK_UFSAO_UNIPRO_RX_SYM0>,
+				 <&ufscfg_ao CLK_UFSAO_UNIPRO_RX_SYM1>,
+				 <&ufscfg_ao CLK_UFSAO_UNIPRO_SYS>,
+				 <&ufscfg_ao CLK_UFSAO_UNIPRO_SAP>,
+				 <&ufscfg_ao CLK_UFSAO_PHY_SAP>,
+				 <&ufscfg_ao CLK_UFSAO_UFSHCI_UFS>,
+				 <&ufscfg_ao CLK_UFSAO_UFSHCI_AES>;
+			clock-names = "ufs", "ufs_aes", "unipro_tx_sym",
+				      "unipro_rx_sym0", "unipro_rx_sym1",
+				      "unipro_sys", "unipro_sap", "ufs_phy_sap",
+				      "ufshci_ufs", "ufshci_aes";
+			resets = <&ufscfg_ao MT8196_UFSAO_RST1_UFS_UNIPRO>,
+				 <&ufscfg_ao MT8196_UFSAO_RST1_UFS_CRYPTO>,
+				 <&ufscfg_ao MT8196_UFSAO_RST1_UFSHCI>;
+			reset-names = "unipro_rst", "crypto_rst", "hci_rst";
+			/* Same feature toggles the vendor tree passes. */
+			mediatek,ufs-rtff-mtcmos;
+			mediatek,ufs-pmc-via-fastauto;
+			mediatek,ufs-broken-vcc;
+			status = "okay";
+		};
+
+		/*
+		 * SSUSB0 -- the USB-C port.  On retail hardware this is the only
+		 * USB path out of the SoC (UART0's pads come out through the same
+		 * connector but need a factory cable), so the debugging console
+		 * rides a CDC-ACM serial gadget on it -- see the board DTS and
+		 * rmx6688.fragment.
+		 *
+		 * Compatible is the generic "mediatek,mtu3": the upstream driver
+		 * has no per-SoC entries beyond mt8173, and the MT6895 xaga port
+		 * binds exactly this way.  Register addresses and the interrupt
+		 * are from the vendor FDT.  Vendor-only properties are dropped:
+		 * no power-domains (the SSUSB mtcmos is left at its bootloader
+		 * state, same bet as UFS) and clk26m as sys_ck -- the real USB
+		 * mux gates live in the vlp_cksys block, which no driver in this
+		 * tree models, and the bootloader leaves them open.
+		 *
+		 * USB3 is not wired up: the retail product caps the port at
+		 * high-speed in software and only the USB2 phy is referenced.
+		 */
+		ssusb: usb0@16701000 {
+			compatible = "mediatek,mtu3";
+			reg = <0 0x16701000 0 0x2e00>,
+			      <0 0x16703e00 0 0x100>;
+			reg-names = "mac", "ippc";
+			interrupts = <GIC_SPI 599 IRQ_TYPE_LEVEL_HIGH 0>;
+			phys = <&u2port0 PHY_TYPE_USB2>;
+			clocks = <&clk26m>;
+			clock-names = "sys_ck";
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+			status = "disabled";
+
+			/*
+			 * The XHCI host is a child of the mtu3 block in the
+			 * vendor tree; mirrored here for parity but inert while
+			 * the port is bound in peripheral mode (the gadget-only
+			 * build never populates it).
+			 */
+			xhci0@16700000 {
+				compatible = "mediatek,mtk-xhci";
+				reg = <0 0x16700000 0 0x1000>;
+				reg-names = "mac";
+				interrupts = <GIC_SPI 600 IRQ_TYPE_LEVEL_HIGH 0>;
+				clocks = <&clk26m>;
+				clock-names = "sys_ck";
+				status = "okay";
+			};
+		};
+
+		/*
+		 * XS-PHY for the USB2 port.  The wrapper deliberately carries no
+		 * reg property: the upstream xsphy driver maps resource 0 of
+		 * the wrapper as the u3 "glb" bank, then maps each port's own
+		 * reg window -- a wrapper reg overlapping its child (as in the
+		 * vendor tree, where a different driver owns it) would collide
+		 * on the second ioremap.  Port regs are absolute and the
+		 * wrapper carries ranges, like the vendor's u2phy1/2.
+		 *
+		 * Calibration: the vendor reads per-unit efuse values through
+		 * nvmem-cells, which has no provider in this tree.  The
+		 * upstream driver instead accepts static "mediatek,eye-*"
+		 * properties; the board file passes the values the vendor
+		 * software ran the device with, and uncalibrated silicon
+		 * defaults are the fallback if they are missing.
+		 */
+		u2phy0: usb-phy0@16730000 {
+			compatible = "mediatek,xsphy";
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+			status = "disabled";
+
+			u2port0: usb2-phy0@16730000 {
+				reg = <0 0x16730000 0 0x400>;
+				clocks = <&clk26m>;
+				clock-names = "ref";
+				#phy-cells = <1>;
+				status = "disabled";
+			};
+		};
+	};
+};

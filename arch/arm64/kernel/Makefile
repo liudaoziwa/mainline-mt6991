@@ -77,6 +77,18 @@ obj-$(CONFIG_COMPAT_VDSO)		+= vdso32-wrap.o
 $(obj)/vdso-wrap.o: $(obj)/vdso/vdso.so
 $(obj)/vdso32-wrap.o: $(obj)/vdso32/vdso.so
 
+obj-$(CONFIG_ARM64_EMBEDDED_DTB)	+= embedded-dtb.o
+
+# embedded-dtb.S pulls the blob in through .incbin, which the C preprocessor
+# cannot see, so the dependency has to be spelled out. Build the DTB through
+# the normal DT machinery rather than open-coding a dtc call.
+embedded-dtb-src := $(CONFIG_ARM64_EMBEDDED_DTB_SOURCE)
+
+$(embedded-dtb-src): $(objtree)/scripts/dtc/dtc FORCE
+	$(Q)$(MAKE) $(build)=$(patsubst %/,%,$(dir $(embedded-dtb-src))) $(embedded-dtb-src)
+
+$(obj)/embedded-dtb.o: $(embedded-dtb-src)
+
 obj-y					+= probes/
 obj-y					+= head.o
 always-$(KBUILD_BUILTIN)		+= vmlinux.lds

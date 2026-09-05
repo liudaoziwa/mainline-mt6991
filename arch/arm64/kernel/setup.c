@@ -207,6 +207,75 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
 	dump_stack_set_arch_desc("%s (DT)", name);
 }
 
+#ifdef CONFIG_ARM64_EMBEDDED_DTB
+
+extern char __embedded_dtb_start[];
+extern char __embedded_dtb_end[];
+
+/*
+ * Replace the bootloader's device tree with the one linked into the kernel
+ * image.
+ *
+ * Called right after setup_machine_fdt(), which is early enough for the
+ * embedded tree to be the one that matters: everything that consumes the
+ * flat tree from here on reads initial_boot_params, and both
+ * early_init_fdt_scan_reserved_mem() (via arm64_memblock_init()) and
+ * unflatten_device_tree() run later in setup_arch().
+ *
+ * What the bootloader's tree has already done by this point is populate
+ * memblock with the DRAM banks, and that is deliberately left alone - the
+ * bootloader knows the real memory map, holes and all. So this does not
+ * re-run early_init_dt_scan_memory().
+ *
+ * /chosen is re-scanned so that the embedded tree's bootargs, initrd and
+ * stdout-path take effect. With CONFIG_CMDLINE_FORCE=y this simply re-copies
+ * CONFIG_CMDLINE over boot_command_line, which is harmless; it runs before
+ * parse_early_param() either way.
+ */
+static void __init setup_embedded_fdt(void)
+{
+	void *dtb = __embedded_dtb_start;
+	int size = __embedded_dtb_end - __embedded_dtb_start;
+	const char *name;
+
+	if (size <= 0) {
+		pr_err("embedded DTB: empty, keeping the bootloader's tree\n");
+		return;
+	}
+
+	/*
+	 * The blob is part of the kernel image, so it is already covered by
+	 * the memblock_reserve() of [_text, _end) in arm64_memblock_init()
+	 * and needs no reservation of its own. It is also in the linear map,
+	 * so __pa_symbol() is the right translation here (unlike the fixmap
+	 * address setup_machine_fdt() has to deal with).
+	 *
+	 * early_init_dt_verify() checks the header before committing, and
+	 * leaves initial_boot_params untouched if it fails, so a bad blob
+	 * degrades to booting on the bootloader's tree.
+	 */
+	if (!early_init_dt_verify(dtb, __pa_symbol(__embedded_dtb_start))) {
+		pr_err("embedded DTB: invalid header, keeping the bootloader's tree\n");
+		return;
+	}
+
+	pr_info("embedded DTB: using built-in blob (%d bytes) instead of the bootloader's\n",
+		size);
+
+	if (early_init_dt_scan_chosen(boot_command_line))
+		pr_warn("embedded DTB: no chosen node found, continuing without\n");
+
+	name = of_flat_dt_get_machine_name();
+	if (name) {
+		pr_info("Machine model: %s\n", name);
+		dump_stack_set_arch_desc("%s (embedded DT)", name);
+	}
+}
+
+#else
+static inline void __init setup_embedded_fdt(void) { }
+#endif /* CONFIG_ARM64_EMBEDDED_DTB */
+
 static void __init request_standard_resources(void)
 {
 	struct memblock_region *region;
@@ -290,6 +359,14 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	early_ioremap_init();
 
 	setup_machine_fdt(__fdt_pointer);
+
+	/*
+	 * Now that the bootloader's tree has populated memblock with the DRAM
+	 * banks, swap in the DTB linked into the kernel image (if any). Must
+	 * stay ahead of parse_early_param() and of arm64_memblock_init(),
+	 * which is where reserved-memory is scanned out of the flat tree.
+	 */
+	setup_embedded_fdt();
 
 	/*
 	 * Initialise the static keys early as they may be enabled by the

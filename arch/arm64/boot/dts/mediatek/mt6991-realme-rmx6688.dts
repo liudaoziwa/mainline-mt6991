@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * realme GT7 (RMX6688) -- MT6991 (Dimensity 9400+), 12 GB LPDDR5X + 256 GB UFS.
+ *
+ * First-boot bring-up target: reach userspace and print the kernel log to the
+ * panel.  There is no display driver here -- the MediaTek bootloader lights up
+ * the DSI panel for its boot logo and leaves it scanning out, so the kernel
+ * borrows that live framebuffer through simplefb and puts fbcon on it.  That
+ * only holds as long as nothing reprograms the display path, which is why no
+ * OVL/DSI/mmsys nodes are described yet.
+ */
+
+/dts-v1/;
+
+#include "mt6991.dtsi"
+
+/ {
+	model = "realme GT7 (RMX6688)";
+	compatible = "realme,rmx6688", "mediatek,mt6991";
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * Live bootloader framebuffer, from /chosen/atag,videolfb in the
+		 * vendor FDT: fb_base 0xfd6b0000, 60.00 Hz, 0x2940000 of VRAM
+		 * (three 1280x2800 buffers plus alignment slack), panel
+		 * "panel_ae031_p_3_a0026_dsi_vdo".
+		 *
+		 * The tag carries no geometry, so width/height come from the
+		 * panel's DRM mode (1280x2800) and the format is the 32 bpp the
+		 * MTK bootloader uses.  reg covers one frame, not all of VRAM.
+		 * If the first boot paints skewed diagonal stripes, the
+		 * bootloader is running 24 bpp instead: switch format to
+		 * "r8g8b8" and stride to <3840>.
+		 */
+		framebuffer0: framebuffer@fd6b0000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xfd6b0000 0x0 (5120 * 2800)>;
+			width = <1280>;
+			height = <2800>;
+			stride = <5120>;
+			format = "x8r8g8b8";
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		/* 12 GB: 0x80000000 - 0x380000000 */
+		reg = <0x0 0x80000000 0x3 0x00000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * Carries over every fixed reservation from the vendor FDT.
+		 * These hold firmware that is live while Linux runs -- BL31,
+		 * TEE, GenieZone, SSPM, MCUPM, SCP, ADSP, modem -- so the kernel
+		 * must not allocate from them.
+		 */
+		#include "mt6991-realme-rmx6688-resmem.dtsi"
+
+		/*
+		 * Same region the vendor kernel uses for pstore, described as a
+		 * mainline ramoops node.  This is the debugging channel that
+		 * matters during bring-up: the log survives a reset, so after a
+		 * failed boot you can reboot into Android and read the mainline
+		 * panic out of /sys/fs/pstore/console-ramoops-0.
+		 *
+		 * Sizes mirror the vendor command line (ramoops.mem_address=
+		 * 0xaec00000 mem_size=0x310000 console_size=0x200000
+		 * pmsg_size=0x100000); record-size takes the remaining 64 KiB.
+		 */
+		ramoops@aec00000 {
+			compatible = "ramoops";
+			reg = <0x0 0xaec00000 0x0 0x310000>;
+			/*
+			 * Keeps the buffer out of the linear map, matching the
+			 * vendor tree.  Without it pstore maps the region
+			 * cacheable and a dirty line written back across a
+			 * reset can eat the very log we booted to read.
+			 */
+			no-map;
+			console-size = <0x200000>;
+			pmsg-size = <0x100000>;
+			record-size = <0x10000>;
+		};
+	};
+
+	/*
+	 * USB-C PHY rail.  The vendor tree takes vusb33 from the mt6373 PMIC
+	 * (mt6373_vusb), which has no mainline driver; the bootloader leaves
+	 * the rail up, so a fixed always-on regulator satisfies the mtu3
+	 * driver's mandatory vusb33-supply without pretending to control it.
+	 * Same approach as the MT6895 xaga port.
+	 */
+	vusb33: regulator-vusb33 {
+		compatible = "regulator-fixed";
+		regulator-name = "vusb33";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
+
+/*
+ * USB-C serial gadget -- the debugging console to a PC (UART0's pads need a
+ * factory cable).  dr_mode is redundant here: the gadget-only kernel build
+ * forces PERIPHERAL in mtu3_probe() regardless.  maximum-speed = "high-speed"
+ * mirrors the retail product, which disables SuperSpeed in software; the
+ * "mediatek,eye-*" tuning values are the ones the vendor kernel ran the
+ * device with (read from the booted vendor FDT).
+ */
+&ssusb {
+	status = "okay";
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	vusb33-supply = <&vusb33>;
+};
+
+&u2phy0 {
+	status = "okay";
+};
+
+&u2port0 {
+	status = "okay";
+	mediatek,eye-vrt = <0x07>;
+	mediatek,eye-term = <0x07>;
+};

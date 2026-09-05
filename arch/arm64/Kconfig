@@ -2463,6 +2463,37 @@ config CMDLINE_FORCE
 
 endchoice
 
+config ARM64_EMBEDDED_DTB
+	bool "Embed a device tree blob into the kernel image"
+	depends on OF_EARLY_FLATTREE
+	help
+	  Link a device tree blob into the kernel image and use it instead of
+	  the one the bootloader passed in x0.
+
+	  This is meant for bringing up a board whose bootloader hands the
+	  kernel a device tree that cannot be replaced - for example an
+	  Android device where the DTB lives in the vendor_boot partition and
+	  the bootloader applies its own overlays to it. With this enabled
+	  only the kernel image has to be flashed.
+
+	  The bootloader's tree is still used to discover the DRAM banks
+	  (memblock is already populated by the time the embedded tree is
+	  installed), which is deliberate: the bootloader knows the real
+	  memory map, holes included. Everything else - /chosen,
+	  reserved-memory and the whole unflattened tree - comes from the
+	  embedded blob.
+
+	  If unsure, say N.
+
+config ARM64_EMBEDDED_DTB_SOURCE
+	string "Path to the DTB to embed"
+	depends on ARM64_EMBEDDED_DTB
+	default "arch/arm64/boot/dts/mediatek/mt6991-realme-rmx6688.dtb"
+	help
+	  Path to the .dtb to link into the kernel, relative to the top of
+	  the build tree. The blob is built through the normal device tree
+	  build machinery before being wrapped.
+
 config EFI_STUB
 	bool
 
