@@ -62,15 +62,10 @@ CONFIG_SERIAL_8250_MT6577=y
 CONFIG_SERIAL_OF_PLATFORM=y
 
 # --- USB-C gadget network console (RNDIS) ---------------------------------
-# Serial-over-USB (#28-#38) parked 2026-09-05: kernel-side gadget stack was
-# proven healthy but no host ever enumerated -- the open break is physical
-# (eUSB2 chain / i2c6 domain power), class-independent.  Trying the class
-# swap next: a network gadget instead of CDC-ACM.  Windows picks the RNDIS
-# configuration with its inbox rndismp driver, no driver install needed.
-#
-# Everything binds via the generic compatibles ("mediatek,mtu3" /
-# "mediatek,xsphy") -- no driver changes, the same route as the MT6895 xaga
-# port.
+# Serial-over-USB: the phone presents a CDC-ACM or RNDIS gadget to the PC.
+# The PC sees D+ pullup but "USB descriptor request failed" -- the eUSB2
+# signal chain (mt6379 repeater via SPMI) needs initialization before the
+# host can read descriptors.
 #
 # Gadget-only mtu3 build: no host stack, and mtu3_probe() then forces
 # dr_mode=PERIPHERAL, which keeps probe off the vbus-supply and role-switch
@@ -81,21 +76,23 @@ CONFIG_USB_GADGET=y
 CONFIG_USB_MTU3=y
 CONFIG_USB_MTU3_GADGET=y
 CONFIG_PHY_MTK_XSPHY=y
-# Legacy g_ether composite, built in: CDC-ECM config plus a second RNDIS
-# config (USB_ETH_RNDIS).  Binds the UDC with zero userspace setup, exposes
-# usbN on the gadget side once the host configures the device.
-CONFIG_USB_ETH=y
-CONFIG_USB_ETH_RNDIS=y
-# Kernel log to the PC over the RNDIS link (#41): once the host enumerates the
-# gadget and usb0 appears, init addresses it statically (192.168.42.129/24)
-# and brings up a dynamic netconsole target (configfs) streaming every console
-# line -- panics included -- as UDP to 192.168.42.100:6666.  Built in because
-# there is no userspace to load modules.
-CONFIG_NETCONSOLE=y
-CONFIG_NETCONSOLE_DYNAMIC=y
-CONFIG_CONFIGFS_FS=y
+# g_serial built-in for CDC-ACM serial gadget to PC
+CONFIG_USB_G_SERIAL=y
 CONFIG_REGULATOR=y
 CONFIG_REGULATOR_FIXED_VOLTAGE=y
+
+# --- I2C6 + NXP eUSB2 repeater (USB-C data path) --------------------------
+# The USB-C port uses an eUSB2 architecture: mtu3 → xsphy → NXP PTN36241
+# repeater (I2C6 @0x4f) → connector.  Without the repeater the host never
+# sees the device.
+#
+# COMMON_CLK_MT8196 gates the peri-ao and vlp clocks; IMP_IIC_WRAP gates
+# the per-I2C-bus clocks.  Both must be built-in so they register before
+# i2c-mt65xx probes (it uses devm_clk_get, not optional).
+CONFIG_COMMON_CLK_MT8196=y
+CONFIG_COMMON_CLK_MT8196_IMP_IIC_WRAP=y
+CONFIG_I2C_MT65XX=y
+CONFIG_PHY_MTK_NXP_EUSB2_REPEATER=y
 
 # --- Android /data probe (f2fs) ------------------------------------------
 # init mounts userdata (GPT partition 95 = /dev/block/by-name/userdata) to
@@ -150,7 +147,7 @@ CONFIG_ARM64_EMBEDDED_DTB_SOURCE="arch/arm64/boot/dts/mediatek/mt6991-realme-rmx
 # every gate the bootloader left enabled but no mainline driver claims yet --
 # including, quite possibly, the display pipeline the framebuffer prints
 # through.  With the flag the kernel leaves hardware exactly as handed over.
-CONFIG_CMDLINE="console=tty0 ignore_loglevel no_console_suspend panic=0 nokaslr clk_ignore_unused"
+CONFIG_CMDLINE="console=tty0 ignore_loglevel no_console_suspend panic=0 nokaslr clk_ignore_unused pd_ignore_unused eusb2_keep_calib"
 CONFIG_CMDLINE_FORCE=y
 
 # --- Build hygiene on-device ---------------------------------------------

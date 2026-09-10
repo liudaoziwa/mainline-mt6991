@@ -5,6 +5,8 @@
  * Copyright (c) 2018 MediaTek Inc.
  * Author: Chunfeng Yun <chunfeng.yun@mediatek.com>
  *
+ * Modified for MT6991: added full vendor u2_phy_instance_power_on()
+ * sequence and u2_phy_instance_set_mode() DPPULLUP support.
  */
 
 #include <dt-bindings/phy/phy.h>
@@ -48,19 +50,71 @@
 
 #define XSP_USBPHYACR0	((SSUSB_SIFSLV_U2PHY_COM) + 0x00)
 #define P2A0_RG_INTR_EN	BIT(5)
+#define P2A0_RG_USB20_TX_PH_ROT_SEL	BIT(20)
+#define P2A0_RG_USB20_CHP_EN	BIT(1)
 
 #define XSP_USBPHYACR1		((SSUSB_SIFSLV_U2PHY_COM) + 0x04)
 #define P2A1_RG_INTR_CAL		GENMASK(23, 19)
 #define P2A1_RG_VRT_SEL			GENMASK(14, 12)
 #define P2A1_RG_TERM_SEL		GENMASK(10, 8)
 
+#define XSP_USBPHYACR4		((SSUSB_SIFSLV_U2PHY_COM) + 0x10)
+#define P2A4_RG_USB20_FS_CR		GENMASK(10, 8)
+#define P2A4_RG_USB20_GPIO_CTL		BIT(9)
+#define P2A4_USB20_GPIO_MODE		BIT(8)
+#define P2A4_U2_GPIO_CTR_MSK (P2A4_RG_USB20_GPIO_CTL | P2A4_USB20_GPIO_MODE)
+
 #define XSP_USBPHYACR5		((SSUSB_SIFSLV_U2PHY_COM) + 0x014)
 #define P2A5_RG_HSTX_SRCAL_EN	BIT(15)
 #define P2A5_RG_HSTX_SRCTRL		GENMASK(14, 12)
+#define P2A6_RG_USB20_SQD		GENMASK(23, 22)
 
 #define XSP_USBPHYACR6		((SSUSB_SIFSLV_U2PHY_COM) + 0x018)
+#define P2A6_RG_U2_PHY_REV6		GENMASK(31, 30)
+#define P2A6_RG_U2_PHY_REV6_VAL(x)	((0x3 & (x)) << 30)
+#define P2A6_RG_U2_PHY_REV1		BIT(25)
 #define P2A6_RG_BC11_SW_EN	BIT(23)
 #define P2A6_RG_OTG_VBUSCMP_EN	BIT(20)
+#define P2A6_RG_U2_DISCTH		GENMASK(7, 4)
+#define P2A6_RG_U2_SQTH			GENMASK(3, 0)
+
+#define XSP_USBPHYACR3		((SSUSB_SIFSLV_U2PHY_COM) + 0x01c)
+#define P2A3_RG_USB20_PUPD_BIST_EN	BIT(12)
+#define P2A3_RG_USB20_EN_PU_DP		BIT(9)
+
+#define XSP_U2PHYACR4		((SSUSB_SIFSLV_U2PHY_COM) + 0x020)
+
+#define XSP_USBPHYA_RESERVE	((SSUSB_SIFSLV_U2PHY_COM) + 0x030)
+#define P2AR_RG_INTR_CAL		GENMASK(29, 24)
+#define P2AR_RG_INTR_CAL_MASK		(0x3f)
+#define P2AR_RG_INTR_CAL_OFET		(24)
+
+#define XSP_USBPHYA_RESERVEA	((SSUSB_SIFSLV_U2PHY_COM) + 0x034)
+#define P2ARA_RG_TERM_CAL		GENMASK(11, 8)
+#define P2ARA_RG_TERM_CAL_MASK          (0xf)
+#define P2ARA_RG_TERM_CAL_OFET		(8)
+
+#define XSP_U2PHYA_RESERVE0	((SSUSB_SIFSLV_U2PHY_COM) + 0x040)
+#define P2A2R0_RG_PLL_FBKSEL         BIT(31)
+#define P2A2R0_RG_HSRX_VREF_SEL		GENMASK(6, 4)
+
+#define XSP_U2PHYA_RESERVE1	((SSUSB_SIFSLV_U2PHY_COM) + 0x044)
+#define P2A2R1_RG_PLL_POSDIV    GENMASK(2, 0)
+#define P2A2R1_RG_PLL_REFCLK_SEL        BIT(5)
+
+#define XSP_U2PHYDCR1		((SSUSB_SIFSLV_U2PHY_COM) + 0x064)
+#define P2C_RG_USB20_SW_PLLMODE	GENMASK(19, 18)
+
+#define XSP_U2PHYDTM0		((SSUSB_SIFSLV_U2PHY_COM) + 0x068)
+#define P2D_FORCE_UART_EN		BIT(26)
+#define P2D_FORCE_DATAIN		BIT(23)
+#define P2D_FORCE_SUSPENDM		BIT(18)
+#define P2D_RG_SUSPENDM			BIT(3)
+#define P2D_RG_XCVRSEL			GENMASK(5, 4)
+#define P2D_RG_DATAIN			GENMASK(13, 10)
+#define P2D_DTM0_PART_MASK \
+		(P2D_FORCE_DATAIN | P2D_FORCE_SUSPENDM | \
+		P2D_RG_XCVRSEL | P2D_RG_DATAIN)
 
 #define XSP_U2PHYDTM1		((SSUSB_SIFSLV_U2PHY_COM) + 0x06C)
 #define P2D_FORCE_IDDIG		BIT(9)
@@ -68,6 +122,7 @@
 #define P2D_RG_SESSEND		BIT(4)
 #define P2D_RG_AVALID		BIT(2)
 #define P2D_RG_IDDIG		BIT(1)
+#define P2D_RG_UART_EN		BIT(6)
 
 #define SSPXTP_PHYA_GLB_00		((SSPXTP_SIFSLV_PHYA_GLB) + 0x00)
 #define RG_XTP_GLB_BIAS_INTR_CTRL		GENMASK(21, 16)
@@ -100,21 +155,50 @@ struct xsphy_instance {
 	u32 type_sw_reg;
 	u32 type_sw_index;
 	/* only for HQA test */
+	bool property_ready;
 	int efuse_intr;
+	int efuse_term_cal;
 	int efuse_tx_imp;
 	int efuse_rx_imp;
+	int intr_ofs;
+	int term_ofs;
+	int host_intr_ofs;
+	int host_term_ofs;
+	int pll_fbksel;
+	int pll_posdiv;
 	/* u2 eye diagram */
 	int eye_src;
 	int eye_vrt;
 	int eye_term;
+	int discth;
+	int rx_sqth;
+	int host_rx_sqth;
+	int rx_sqd;
+	int host_rx_sqd;
+	int rev6;
+	int hsrx_vref_sel;
+	int fs_cr;
+	/* u2 eye diagram for host */
+	int eye_src_host;
+	int eye_vrt_host;
+	int eye_term_host;
+	int rev6_host;
+	/* refclk source */
+	bool refclk_sel;
+	/* HWPLL mode setting */
+	bool hwpll_mode;
+	bool chp_en_disable;
 };
 
 struct mtk_xsphy {
 	struct device *dev;
 	void __iomem *glb_base;	/* only shared u3 sif */
+	int nphys;
 	int src_ref_clk; /* MHZ, reference clock for slew rate calibrate */
 	int src_coef;    /* coefficient for slew rate calibrate */
-	int nphys;
+	bool tx_chirpK_disable;
+	bool bc11_switch_disable;
+	int sw_ver;
 	struct xsphy_instance *phys[] __counted_by(nphys);
 };
 
@@ -126,53 +210,38 @@ static void u2_phy_slew_rate_calibrate(struct mtk_xsphy *xsphy,
 	int fm_out;
 	u32 tmp;
 
-	/* use force value */
 	if (inst->eye_src)
 		return;
 
-	/* enable USB ring oscillator */
 	mtk_phy_set_bits(pbase + XSP_USBPHYACR5, P2A5_RG_HSTX_SRCAL_EN);
-	udelay(1);	/* wait clock stable */
+	udelay(1);
 
-	/* enable free run clock */
 	mtk_phy_set_bits(pbase + XSP_U2FREQ_FMMONR1, P2F_RG_FRCK_EN);
 
-	/* set cycle count as 1024 */
 	mtk_phy_update_field(pbase + XSP_U2FREQ_FMCR0, P2F_RG_CYCLECNT,
 			     XSP_FM_DET_CYCLE_CNT);
 
-	/* enable frequency meter */
 	mtk_phy_set_bits(pbase + XSP_U2FREQ_FMCR0, P2F_RG_FREQDET_EN);
 
-	/* ignore return value */
 	readl_poll_timeout(pbase + XSP_U2FREQ_FMMONR1, tmp,
 			   (tmp & P2F_USB_FM_VALID), 10, 200);
 
 	fm_out = readl(pbase + XSP_U2FREQ_MMONR0);
 
-	/* disable frequency meter */
 	mtk_phy_clear_bits(pbase + XSP_U2FREQ_FMCR0, P2F_RG_FREQDET_EN);
 
-	/* disable free run clock */
 	mtk_phy_clear_bits(pbase + XSP_U2FREQ_FMMONR1, P2F_RG_FRCK_EN);
 
 	if (fm_out) {
-		/* (1024 / FM_OUT) x reference clock frequency x coefficient */
 		tmp = xsphy->src_ref_clk * xsphy->src_coef;
 		tmp = (tmp * XSP_FM_DET_CYCLE_CNT) / fm_out;
 		calib_val = DIV_ROUND_CLOSEST(tmp, XSP_SR_COEF_DIVISOR);
 	} else {
-		/* if FM detection fail, set default value */
 		calib_val = 3;
 	}
-	dev_dbg(xsphy->dev, "phy.%d, fm_out:%d, calib:%d (clk:%d, coef:%d)\n",
-		inst->index, fm_out, calib_val,
-		xsphy->src_ref_clk, xsphy->src_coef);
 
-	/* set HS slew rate */
 	mtk_phy_update_field(pbase + XSP_USBPHYACR5, P2A5_RG_HSTX_SRCTRL, calib_val);
 
-	/* disable USB ring oscillator */
 	mtk_phy_clear_bits(pbase + XSP_USBPHYACR5, P2A5_RG_HSTX_SRCAL_EN);
 }
 
@@ -180,8 +249,20 @@ static void u2_phy_instance_init(struct mtk_xsphy *xsphy,
 				 struct xsphy_instance *inst)
 {
 	void __iomem *pbase = inst->port_base;
+	u32 tmp;
 
-	/* DP/DM BC1.1 path Disable */
+	if (inst->efuse_intr == -EINVAL) {
+		tmp = readl(pbase + XSP_USBPHYA_RESERVE);
+		tmp >>= P2AR_RG_INTR_CAL_OFET;
+		inst->efuse_intr = tmp & P2AR_RG_INTR_CAL_MASK;
+	}
+
+	if (inst->efuse_term_cal == -EINVAL) {
+		tmp = readl(pbase + XSP_USBPHYA_RESERVEA);
+		tmp >>= P2ARA_RG_TERM_CAL_OFET;
+		inst->efuse_term_cal = tmp & P2ARA_RG_TERM_CAL_MASK;
+	}
+
 	mtk_phy_clear_bits(pbase + XSP_USBPHYACR6, P2A6_RG_BC11_SW_EN);
 
 	mtk_phy_set_bits(pbase + XSP_USBPHYACR0, P2A0_RG_INTR_EN);
@@ -193,11 +274,58 @@ static void u2_phy_instance_power_on(struct mtk_xsphy *xsphy,
 	void __iomem *pbase = inst->port_base;
 	u32 index = inst->index;
 
+	/* PLL refclk select */
+	if (inst->refclk_sel) {
+		mtk_phy_set_bits(pbase + XSP_U2PHYA_RESERVE1,
+					P2A2R1_RG_PLL_REFCLK_SEL);
+		udelay(250);
+	}
+
+	/* suspend release dance */
+	mtk_phy_set_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_SUSPENDM);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_RG_SUSPENDM);
+	mtk_phy_set_bits(pbase + XSP_U2PHYDTM0, P2D_RG_SUSPENDM);
+	udelay(30);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_SUSPENDM);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_RG_SUSPENDM);
+
+	/* clear test modes */
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_UART_EN);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM1, P2D_RG_UART_EN);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYACR4, P2A4_U2_GPIO_CTR_MSK);
+
+	/* clear force bits */
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_SUSPENDM);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0,
+			   (P2D_RG_XCVRSEL | P2D_RG_DATAIN | P2D_DTM0_PART_MASK));
+
+	/* HWPLL mode */
+	if (inst->hwpll_mode)
+		mtk_phy_clear_bits(pbase + XSP_U2PHYDCR1, P2C_RG_USB20_SW_PLLMODE);
+
+	/* BC11 disable */
+	mtk_phy_clear_bits(pbase + XSP_USBPHYACR6, P2A6_RG_BC11_SW_EN);
+
+	/* VBUS detect */
 	mtk_phy_set_bits(pbase + XSP_USBPHYACR6, P2A6_RG_OTG_VBUSCMP_EN);
 
 	mtk_phy_update_bits(pbase + XSP_U2PHYDTM1,
 			    P2D_RG_VBUSVALID | P2D_RG_AVALID | P2D_RG_SESSEND,
 			    P2D_RG_VBUSVALID | P2D_RG_AVALID);
+
+	/* clear TX phase rotation */
+	mtk_phy_clear_bits(pbase + XSP_USBPHYACR0, P2A0_RG_USB20_TX_PH_ROT_SEL);
+
+	/* REV6=1, REV1=0 then settle */
+	mtk_phy_clear_bits(pbase + XSP_USBPHYACR6,
+			   (P2A6_RG_U2_PHY_REV6 | P2A6_RG_U2_PHY_REV1));
+	mtk_phy_set_bits(pbase + XSP_USBPHYACR6, P2A6_RG_U2_PHY_REV6_VAL(1));
+
+	udelay(800);
+
+	/* CHP_EN disable */
+	if (inst->chp_en_disable)
+		mtk_phy_clear_bits(pbase + XSP_USBPHYACR0, P2A0_RG_USB20_CHP_EN);
 
 	dev_dbg(xsphy->dev, "%s(%d)\n", __func__, index);
 }
@@ -208,77 +336,22 @@ static void u2_phy_instance_power_off(struct mtk_xsphy *xsphy,
 	void __iomem *pbase = inst->port_base;
 	u32 index = inst->index;
 
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_UART_EN);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM1, P2D_RG_UART_EN);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYACR4, P2A4_U2_GPIO_CTR_MSK);
+	mtk_phy_clear_bits(pbase + XSP_USBPHYACR6, P2A6_RG_BC11_SW_EN);
 	mtk_phy_clear_bits(pbase + XSP_USBPHYACR6, P2A6_RG_OTG_VBUSCMP_EN);
 
 	mtk_phy_update_bits(pbase + XSP_U2PHYDTM1,
 			    P2D_RG_VBUSVALID | P2D_RG_AVALID | P2D_RG_SESSEND,
 			    P2D_RG_SESSEND);
 
+	mtk_phy_set_bits(pbase + XSP_U2PHYDTM0, (P2D_RG_SUSPENDM | P2D_FORCE_SUSPENDM));
+	mdelay(2);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_SUSPENDM);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_RG_SUSPENDM);
+
 	dev_dbg(xsphy->dev, "%s(%d)\n", __func__, index);
-}
-
-static void u2_phy_instance_set_mode(struct mtk_xsphy *xsphy,
-				     struct xsphy_instance *inst,
-				     enum phy_mode mode)
-{
-	u32 tmp;
-
-	tmp = readl(inst->port_base + XSP_U2PHYDTM1);
-	switch (mode) {
-	case PHY_MODE_USB_DEVICE:
-		tmp |= P2D_FORCE_IDDIG | P2D_RG_IDDIG;
-		break;
-	case PHY_MODE_USB_HOST:
-		tmp |= P2D_FORCE_IDDIG;
-		tmp &= ~P2D_RG_IDDIG;
-		break;
-	case PHY_MODE_USB_OTG:
-		tmp &= ~(P2D_FORCE_IDDIG | P2D_RG_IDDIG);
-		break;
-	default:
-		return;
-	}
-	writel(tmp, inst->port_base + XSP_U2PHYDTM1);
-}
-
-static void phy_parse_property(struct mtk_xsphy *xsphy,
-				struct xsphy_instance *inst)
-{
-	struct device *dev = &inst->phy->dev;
-
-	switch (inst->type) {
-	case PHY_TYPE_USB2:
-		device_property_read_u32(dev, "mediatek,efuse-intr",
-					 &inst->efuse_intr);
-		device_property_read_u32(dev, "mediatek,eye-src",
-					 &inst->eye_src);
-		device_property_read_u32(dev, "mediatek,eye-vrt",
-					 &inst->eye_vrt);
-		device_property_read_u32(dev, "mediatek,eye-term",
-					 &inst->eye_term);
-		dev_dbg(dev, "intr:%d, src:%d, vrt:%d, term:%d\n",
-			inst->efuse_intr, inst->eye_src,
-			inst->eye_vrt, inst->eye_term);
-		break;
-	case PHY_TYPE_USB3:
-		device_property_read_u32(dev, "mediatek,efuse-intr",
-					 &inst->efuse_intr);
-		device_property_read_u32(dev, "mediatek,efuse-tx-imp",
-					 &inst->efuse_tx_imp);
-		device_property_read_u32(dev, "mediatek,efuse-rx-imp",
-					 &inst->efuse_rx_imp);
-		dev_dbg(dev, "intr:%d, tx-imp:%d, rx-imp:%d\n",
-			inst->efuse_intr, inst->efuse_tx_imp,
-			inst->efuse_rx_imp);
-		break;
-	case PHY_TYPE_PCIE:
-	case PHY_TYPE_SGMII:
-		/* nothing to do */
-		break;
-	default:
-		dev_err(xsphy->dev, "incompatible phy type\n");
-		return;
-	}
 }
 
 static void u2_phy_props_set(struct mtk_xsphy *xsphy,
@@ -286,21 +359,125 @@ static void u2_phy_props_set(struct mtk_xsphy *xsphy,
 {
 	void __iomem *pbase = inst->port_base;
 
-	if (inst->efuse_intr)
-		mtk_phy_update_field(pbase + XSP_USBPHYACR1, P2A1_RG_INTR_CAL,
-				     inst->efuse_intr);
+	if (inst->efuse_intr != -EINVAL) {
+		int intr_val = inst->efuse_intr + inst->intr_ofs;
 
-	if (inst->eye_src)
+		if (inst->intr_ofs < -P2AR_RG_INTR_CAL_MASK ||
+			inst->intr_ofs > P2AR_RG_INTR_CAL_MASK ||
+			intr_val < 0 || intr_val > P2AR_RG_INTR_CAL_MASK)
+			intr_val = inst->efuse_intr;
+
+		mtk_phy_update_field(pbase + XSP_USBPHYA_RESERVE, P2AR_RG_INTR_CAL, intr_val);
+	}
+
+	if (inst->efuse_term_cal != -EINVAL) {
+		int term_val = inst->efuse_term_cal + inst->term_ofs;
+
+		if (inst->term_ofs < -P2ARA_RG_TERM_CAL_MASK ||
+			inst->term_ofs > P2ARA_RG_TERM_CAL_MASK ||
+			term_val < 0 || term_val > P2ARA_RG_TERM_CAL_MASK)
+			term_val = inst->efuse_term_cal;
+
+		mtk_phy_update_field(pbase + XSP_USBPHYA_RESERVEA, P2ARA_RG_TERM_CAL, term_val);
+	}
+
+	if (inst->eye_src != -EINVAL)
 		mtk_phy_update_field(pbase + XSP_USBPHYACR5, P2A5_RG_HSTX_SRCTRL,
 				     inst->eye_src);
 
-	if (inst->eye_vrt)
+	if (inst->eye_vrt != -EINVAL)
 		mtk_phy_update_field(pbase + XSP_USBPHYACR1, P2A1_RG_VRT_SEL,
 				     inst->eye_vrt);
 
-	if (inst->eye_term)
+	if (inst->eye_term != -EINVAL)
 		mtk_phy_update_field(pbase + XSP_USBPHYACR1, P2A1_RG_TERM_SEL,
 				     inst->eye_term);
+
+	if (inst->discth != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR6, P2A6_RG_U2_DISCTH,
+				    inst->discth);
+
+	if (inst->rx_sqth != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR6, P2A6_RG_U2_SQTH,
+				    inst->rx_sqth);
+
+	if (inst->rx_sqd != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR5, P2A6_RG_USB20_SQD,
+				    inst->rx_sqd);
+
+	if (inst->rev6 != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR6, P2A6_RG_U2_PHY_REV6,
+				     inst->rev6);
+
+	if (inst->pll_fbksel != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_U2PHYA_RESERVE0, P2A2R0_RG_PLL_FBKSEL,
+				     inst->pll_fbksel);
+
+	if (inst->pll_posdiv != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_U2PHYA_RESERVE1, P2A2R1_RG_PLL_POSDIV,
+				     inst->pll_posdiv);
+
+	if (inst->hsrx_vref_sel != -EINVAL) {
+		if (!xsphy->sw_ver)
+			mtk_phy_update_field(pbase + XSP_U2PHYA_RESERVE0, P2A2R0_RG_HSRX_VREF_SEL,
+				     inst->hsrx_vref_sel);
+	}
+
+	if (inst->fs_cr != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR4, P2A4_RG_USB20_FS_CR,
+				     inst->fs_cr);
+}
+
+static void u2_phy_host_props_set(struct mtk_xsphy *xsphy,
+			     struct xsphy_instance *inst)
+{
+	void __iomem *pbase = inst->port_base;
+
+	if (inst->efuse_intr != -EINVAL) {
+		int host_intr_val = inst->efuse_intr + inst->host_intr_ofs;
+
+		if (inst->host_intr_ofs < -P2AR_RG_INTR_CAL_MASK ||
+			inst->host_intr_ofs > P2AR_RG_INTR_CAL_MASK ||
+			host_intr_val < 0 || host_intr_val > P2AR_RG_INTR_CAL_MASK)
+			host_intr_val = inst->efuse_intr;
+
+		mtk_phy_update_field(pbase + XSP_USBPHYA_RESERVE, P2AR_RG_INTR_CAL, host_intr_val);
+	}
+
+	if (inst->efuse_term_cal != -EINVAL) {
+		int host_term_val = inst->efuse_term_cal + inst->host_term_ofs;
+
+		if (inst->host_term_ofs < -P2ARA_RG_TERM_CAL_MASK ||
+			inst->host_term_ofs > P2ARA_RG_TERM_CAL_MASK ||
+			host_term_val < 0 || host_term_val > P2ARA_RG_TERM_CAL_MASK)
+			host_term_val = inst->efuse_term_cal;
+
+		mtk_phy_update_field(pbase + XSP_USBPHYA_RESERVEA, P2ARA_RG_TERM_CAL, host_term_val);
+	}
+
+	if (inst->eye_src_host != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR5, P2A5_RG_HSTX_SRCTRL,
+				     inst->eye_src_host);
+
+	if (inst->eye_vrt_host != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR1, P2A1_RG_VRT_SEL,
+				     inst->eye_vrt_host);
+
+	if (inst->eye_term_host != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR1, P2A1_RG_TERM_SEL,
+				     inst->eye_term_host);
+
+	if (inst->rev6_host != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR6, P2A6_RG_U2_PHY_REV6,
+				     inst->rev6_host);
+
+	if (inst->host_rx_sqth != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR6, P2A6_RG_U2_SQTH,
+				    inst->host_rx_sqth);
+
+	if (inst->host_rx_sqd != -EINVAL)
+		mtk_phy_update_field(pbase + XSP_USBPHYACR5, P2A6_RG_USB20_SQD,
+				    inst->host_rx_sqd);
 }
 
 static void u3_phy_props_set(struct mtk_xsphy *xsphy,
@@ -328,7 +505,6 @@ static int phy_type_syscon_get(struct xsphy_instance *instance,
 	struct of_phandle_args args;
 	int ret;
 
-	/* type switch function is optional */
 	if (!of_property_present(dn, "mediatek,syscon-type"))
 		return 0;
 
@@ -338,11 +514,9 @@ static int phy_type_syscon_get(struct xsphy_instance *instance,
 		return ret;
 
 	instance->type_sw_reg = args.args[0];
-	instance->type_sw_index = args.args[1] & 0x3; /* <=3 */
+	instance->type_sw_index = args.args[1] & 0x3;
 	instance->type_sw = syscon_node_to_regmap(args.np);
 	of_node_put(args.np);
-	dev_info(&instance->phy->dev, "type_sw - reg %#x, index %d\n",
-		 instance->type_sw_reg, instance->type_sw_index);
 
 	return PTR_ERR_OR_ZERO(instance->type_sw);
 }
@@ -377,6 +551,112 @@ static int phy_type_set(struct xsphy_instance *instance)
 	return 0;
 }
 
+static void phy_parse_property(struct mtk_xsphy *xsphy,
+				struct xsphy_instance *inst)
+{
+	struct device *dev = &inst->phy->dev;
+	const char *ofs_str;
+
+	switch (inst->type) {
+	case PHY_TYPE_USB2:
+		if (device_property_read_u32(dev, "mediatek,efuse-intr",
+					 &inst->efuse_intr) || inst->efuse_intr < 0)
+			inst->efuse_intr = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,efuse-term",
+					 &inst->efuse_term_cal) || inst->efuse_term_cal < 0)
+			inst->efuse_term_cal = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,eye-src",
+					 &inst->eye_src) || inst->eye_src < 0)
+			inst->eye_src = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,eye-vrt",
+					 &inst->eye_vrt) || inst->eye_vrt < 0)
+			inst->eye_vrt = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,eye-term",
+					 &inst->eye_term) || inst->eye_term < 0)
+			inst->eye_term = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,discth",
+					 &inst->discth) || inst->discth < 0)
+			inst->discth = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,rx-sqth",
+					 &inst->rx_sqth) || inst->rx_sqth < 0)
+			inst->rx_sqth = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,host-rx-sqth",
+					 &inst->host_rx_sqth) || inst->host_rx_sqth < 0)
+			inst->host_rx_sqth = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,rx-sqd",
+					 &inst->rx_sqd) || inst->rx_sqd < 0)
+			inst->rx_sqd = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,host-rx-sqd",
+					 &inst->host_rx_sqd) || inst->host_rx_sqd < 0)
+			inst->host_rx_sqd = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,rev6",
+					 &inst->rev6) || inst->rev6 < 0)
+			inst->rev6 = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,hsrx-vref-sel",
+					&inst->hsrx_vref_sel) || inst->hsrx_vref_sel < 0)
+			inst->hsrx_vref_sel = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,fs-cr",
+					&inst->fs_cr) || inst->fs_cr < 0)
+			inst->fs_cr = -EINVAL;
+		if (device_property_read_string(dev, "mediatek,intr-ofs",
+					 &ofs_str) || kstrtoint(ofs_str, 10, &inst->intr_ofs) < 0)
+			inst->intr_ofs = -(P2AR_RG_INTR_CAL_MASK + 1);
+		if (device_property_read_string(dev, "mediatek,host-intr-ofs",
+					 &ofs_str) || kstrtoint(ofs_str, 10, &inst->host_intr_ofs) < 0)
+			inst->host_intr_ofs = -(P2AR_RG_INTR_CAL_MASK + 1);
+		if (device_property_read_string(dev, "mediatek,term-ofs",
+					 &ofs_str) || kstrtoint(ofs_str, 10, &inst->term_ofs) < 0)
+			inst->term_ofs = -(P2ARA_RG_TERM_CAL_MASK + 1);
+		if (device_property_read_string(dev, "mediatek,host-term-ofs",
+					 &ofs_str) || kstrtoint(ofs_str, 10, &inst->host_term_ofs) < 0)
+			inst->host_term_ofs = -(P2ARA_RG_TERM_CAL_MASK + 1);
+		if (device_property_read_u32(dev, "mediatek,pll-fbksel",
+				 &inst->pll_fbksel) || inst->pll_fbksel < 0)
+			inst->pll_fbksel = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,pll-posdiv",
+				 &inst->pll_posdiv) || inst->pll_posdiv < 0)
+			inst->pll_posdiv = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,eye-src-host",
+					 &inst->eye_src_host) || inst->eye_src_host < 0)
+			inst->eye_src_host = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,eye-vrt-host",
+					 &inst->eye_vrt_host) || inst->eye_vrt_host < 0)
+			inst->eye_vrt_host = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,eye-term-host",
+					 &inst->eye_term_host) || inst->eye_term_host < 0)
+			inst->eye_term_host = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,rev6-host",
+					&inst->rev6_host) || inst->rev6_host < 0)
+			inst->rev6_host = -EINVAL;
+		inst->hwpll_mode = device_property_read_bool(dev, "mediatek,hwpll-mode");
+		inst->refclk_sel = device_property_read_bool(dev, "mediatek,refclk-sel");
+		inst->chp_en_disable = device_property_read_bool(dev, "mediatek,chp-en-disable");
+
+		dev_info(dev, "device: vrt:%d term:%d rev6:%d | u2_intr:%d term_cal:%d | discth:%d rx_sqth:%d rx_sqd:%d fs_cr:%d\n",
+			inst->eye_vrt, inst->eye_term, inst->rev6,
+			inst->efuse_intr, inst->efuse_term_cal,
+			inst->discth, inst->rx_sqth, inst->rx_sqd, inst->fs_cr);
+		break;
+	case PHY_TYPE_USB3:
+		if (device_property_read_u32(dev, "mediatek,efuse-intr",
+					 &inst->efuse_intr) || inst->efuse_intr < 0)
+			inst->efuse_intr = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,efuse-tx-imp",
+					 &inst->efuse_tx_imp) || inst->efuse_tx_imp < 0)
+			inst->efuse_tx_imp = -EINVAL;
+		if (device_property_read_u32(dev, "mediatek,efuse-rx-imp",
+					 &inst->efuse_rx_imp) || inst->efuse_rx_imp < 0)
+			inst->efuse_rx_imp = -EINVAL;
+		break;
+	case PHY_TYPE_PCIE:
+	case PHY_TYPE_SGMII:
+		break;
+	default:
+		dev_err(xsphy->dev, "incompatible phy type\n");
+		return;
+	}
+}
+
 static int mtk_phy_init(struct phy *phy)
 {
 	struct xsphy_instance *inst = phy_get_drvdata(phy);
@@ -399,7 +679,6 @@ static int mtk_phy_init(struct phy *phy)
 		break;
 	case PHY_TYPE_PCIE:
 	case PHY_TYPE_SGMII:
-		/* nothing to do, only used to set type */
 		break;
 	default:
 		dev_err(xsphy->dev, "incompatible phy type\n");
@@ -447,8 +726,35 @@ static int mtk_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 	struct xsphy_instance *inst = phy_get_drvdata(phy);
 	struct mtk_xsphy *xsphy = dev_get_drvdata(phy->dev.parent);
 
-	if (inst->type == PHY_TYPE_USB2)
-		u2_phy_instance_set_mode(xsphy, inst, mode);
+	if (inst->type == PHY_TYPE_USB2) {
+		/* For device mode: apply device props and set IDDIG */
+		if (mode == PHY_MODE_USB_DEVICE && !submode) {
+			u2_phy_props_set(xsphy, inst);
+			mtk_phy_set_bits(inst->port_base + XSP_U2PHYDTM1,
+					 P2D_FORCE_IDDIG | P2D_RG_IDDIG);
+		} else if (mode == PHY_MODE_USB_HOST && !submode) {
+			u2_phy_host_props_set(xsphy, inst);
+			mtk_phy_set_bits(inst->port_base + XSP_U2PHYDTM1,
+					 P2D_FORCE_IDDIG);
+			mtk_phy_clear_bits(inst->port_base + XSP_U2PHYDTM1,
+					   P2D_RG_IDDIG);
+		} else if (!submode) {
+			/* OTG: clear force */
+			mtk_phy_clear_bits(inst->port_base + XSP_U2PHYDTM1,
+					   P2D_FORCE_IDDIG | P2D_RG_IDDIG);
+		}
+
+		/* DPPULLUP_SET: SoC EN_PU_DP */
+		if (submode == 5) { /* PHY_MODE_DPPULLUP_SET */
+			mtk_phy_set_bits(inst->port_base + XSP_USBPHYACR3,
+					(P2A3_RG_USB20_PUPD_BIST_EN |
+					P2A3_RG_USB20_EN_PU_DP));
+		} else if (submode == 6) { /* PHY_MODE_DPPULLUP_CLR */
+			mtk_phy_clear_bits(inst->port_base + XSP_USBPHYACR3,
+					(P2A3_RG_USB20_PUPD_BIST_EN |
+					P2A3_RG_USB20_EN_PU_DP));
+		}
+	}
 
 	return 0;
 }
@@ -519,7 +825,8 @@ static int mtk_xsphy_probe(struct platform_device *pdev)
 	int port;
 
 	nphys = of_get_child_count(np);
-	xsphy = devm_kzalloc(dev, struct_size(xsphy, phys, nphys), GFP_KERNEL);
+	xsphy = devm_kzalloc(dev, offsetof(struct mtk_xsphy, phys) +
+			     nphys * sizeof(xsphy->phys[0]), GFP_KERNEL);
 	if (!xsphy)
 		return -ENOMEM;
 
@@ -530,7 +837,6 @@ static int mtk_xsphy_probe(struct platform_device *pdev)
 	glb_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	/* optional, may not exist if no u3 phys */
 	if (glb_res) {
-		/* get banks shared by multiple u3 phys */
 		xsphy->glb_base = devm_ioremap_resource(dev, glb_res);
 		if (IS_ERR(xsphy->glb_base)) {
 			dev_err(dev, "failed to remap glb regs\n");
@@ -540,10 +846,14 @@ static int mtk_xsphy_probe(struct platform_device *pdev)
 
 	xsphy->src_ref_clk = XSP_REF_CLK;
 	xsphy->src_coef = XSP_SLEW_RATE_COEF;
-	/* update parameters of slew rate calibrate if exist */
 	device_property_read_u32(dev, "mediatek,src-ref-clk-mhz",
 				 &xsphy->src_ref_clk);
 	device_property_read_u32(dev, "mediatek,src-coef", &xsphy->src_coef);
+
+	xsphy->tx_chirpK_disable = device_property_read_bool(dev,
+				"tx-chirpk-capable");
+	xsphy->bc11_switch_disable = device_property_read_bool(dev,
+			"bc11-switch-disable");
 
 	port = 0;
 	for_each_child_of_node_scoped(np, child_np) {
@@ -603,7 +913,6 @@ static struct platform_driver mtk_xsphy_driver = {
 		.of_match_table = mtk_xsphy_id_table,
 	},
 };
-
 module_platform_driver(mtk_xsphy_driver);
 
 MODULE_AUTHOR("Chunfeng Yun <chunfeng.yun@mediatek.com>");

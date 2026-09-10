@@ -136,4 +136,42 @@
 	status = "okay";
 	mediatek,eye-vrt = <0x07>;
 	mediatek,eye-term = <0x07>;
+	mediatek,refclk-sel;
+	mediatek,chp-en-disable;
+	mediatek,hsrx-vref-sel = <0x7>;
+	mediatek,fs-cr = <0x7>;
+	mediatek,discth = <11>;
+	mediatek,rx-sqth = <2>;
+	mediatek,rx-sqd = <2>;
+	mediatek,rev6 = <3>;
+};
+
+/*
+ * I2C6 -- hosts the NXP eUSB2 repeater (PTN36241 at 0x4f) which is on the
+ * USB2 data path between the xsphy and the connector.  Without it the host
+ * never enumerates the device.  The bootloader leaves the I2C controller and
+ * the repeater running, so even if the pinctrl node is missing the driver
+ * can still probe the chip and reconfigure it.
+ *
+ * The PS5170 (USB-C mux/redriver at 0x28) is also here but has no mainline
+ * driver yet; the node is present so the hardware is documented.
+ *
+ * SCL = GPIO104, SDA = GPIO105 (vendor FDT scl-gpio-id / sda-gpio-id).
+ */
+&i2c6 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	nxp-eusb2-repeater@4f {
+		compatible = "mtk,nxp-eusb2-repeater";
+		reg = <0x4f>;
+		#phy-cells = <0>;
+		status = "okay";
+	};
+
+	ps5170@28 {
+		compatible = "parade,ps5170";
+		reg = <0x28>;
+		status = "okay";
+	};
 };

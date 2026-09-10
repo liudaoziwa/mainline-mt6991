@@ -223,6 +223,52 @@
 		};
 
 		/*
+		 * IMP_IIC_WRAP_W -- clock gate provider for I2C controllers
+		 * in the "west" domain.  I2C6 lives here and needs its gate
+		 * open for the adapter driver to talk to the NXP eUSB2
+		 * repeater.
+		 */
+		imp_iic_wrap_w: clock-controller@131b0000 {
+			compatible = "mediatek,mt8196-imp-iic-wrap-w", "syscon";
+			reg = <0 0x131b0000 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
+		/*
+		 * PERICFG_AO -- peripheral always-on configuration.
+		 * Provides the DMA bus clock for the I2C adapters.
+		 */
+		pericfg_ao: clock-controller@16640000 {
+			compatible = "mediatek,mt8196-pericfg-ao", "syscon";
+			reg = <0 0x16640000 0 0x1000>;
+			mediatek,hardware-voter = <&hwv>;
+			#clock-cells = <1>;
+		};
+
+		/*
+		 * I2C6 -- hosts the NXP eUSB2 repeater (PTN36241 at 0x4f)
+		 * and the Parade PS5170 USB-C mux (at 0x28).  The repeater
+		 * is on the USB data path between the USB2 PHY and the
+		 * connector; without it the host never sees the device.
+		 *
+		 * Compatible: mt8192 shares the same I2C register layout.
+		 * scl/sda GPIO IDs from the vendor FDT (GPIO104/105).
+		 */
+		i2c6: i2c@13170000 {
+			compatible = "mediatek,mt8192-i2c";
+			reg = <0 0x13170000 0 0x20000>,
+			      <0 0x16410000 0 0x10000>;
+			interrupts = <GIC_SPI 343 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&imp_iic_wrap_w CLK_IMPW_I2C6>,
+				 <&pericfg_ao CLK_PERI_AO_AP_DMA_X32W_BCLK>;
+			clock-names = "main", "dma";
+			clock-div = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
 		 * TOPRGU.  The bootloader arms this watchdog before entering the
 		 * kernel, so the node is mandatory: mtk_wdt_init() notices
 		 * WDT_MODE_EN is already set, flags the device WDOG_HW_RUNNING,
@@ -390,6 +436,10 @@
 				clocks = <&clk26m>;
 				clock-names = "ref";
 				#phy-cells = <1>;
+				mediatek,refclk-sel;
+				mediatek,chp-en-disable;
+				mediatek,hsrx-vref-sel = <0x7>;
+				mediatek,fs-cr = <0x7>;
 				status = "disabled";
 			};
 		};

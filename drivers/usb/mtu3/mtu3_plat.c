@@ -131,6 +131,7 @@ static void ssusb_phy_power_off(struct ssusb_mtk *ssusb)
 static int ssusb_rscs_init(struct ssusb_mtk *ssusb)
 {
 	int ret = 0;
+	int i;
 
 	ret = regulator_enable(ssusb->vusb33);
 	if (ret) {
@@ -154,7 +155,23 @@ static int ssusb_rscs_init(struct ssusb_mtk *ssusb)
 		goto phy_err;
 	}
 
+	/* Vendor code calls ssusb_phy_set_mode(PHY_MODE_USB_DEVICE) from
+	 * switch_port_to_on() during the role switch.  Mainline mtu3 in
+	 * peripheral-only mode never triggers a role switch, so the PHY
+	 * never enters device mode.  Set it here after power-on, which is
+	 * functionally equivalent to the vendor's switch_port_to_on(). */
+	for (i = 0; i < ssusb->num_phys; i++) {
+		ret = phy_set_mode(ssusb->phys[i], PHY_MODE_USB_DEVICE);
+		if (ret) {
+			dev_err(ssusb->dev, "failed to set phy mode\n");
+			goto phy_mode_err;
+		}
+	}
+
 	return 0;
+
+phy_mode_err:
+	ssusb_phy_power_off(ssusb);
 
 phy_err:
 	ssusb_phy_exit(ssusb);
@@ -168,6 +185,11 @@ vusb33_err:
 
 static void ssusb_rscs_exit(struct ssusb_mtk *ssusb)
 {
+	int i;
+
+	for (i = 0; i < ssusb->num_phys; i++)
+		phy_set_mode(ssusb->phys[i], PHY_MODE_INVALID);
+
 	clk_bulk_disable_unprepare(BULK_CLKS_CNT, ssusb->clks);
 	regulator_disable(ssusb->vusb33);
 	ssusb_phy_power_off(ssusb);
@@ -187,7 +209,9 @@ static void ssusb_ip_sw_reset(struct ssusb_mtk *ssusb)
 	 * power down device ip, otherwise ip-sleep will fail when working as
 	 * host only mode
 	 */
-	mtu3_setbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL2, SSUSB_IP_DEV_PDN);
+	if (ssusb->dr_mode == USB_DR_MODE_HOST)
+		mtu3_setbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL2,
+				SSUSB_IP_DEV_PDN);
 }
 
 static void ssusb_u3_drd_check(struct ssusb_mtk *ssusb)

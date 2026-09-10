@@ -365,6 +365,12 @@ void mtu3_start(struct mtu3 *mtu)
 	mtu3_intr_enable(mtu);
 	mtu->is_active = 1;
 
+	/* Vendor calls ssusb_set_force_vbus(true) here to force
+	 * VBUS_FRC_EN|VBUS_ON in U3D_MISC_CTRL.  Without this the
+	 * MAC relies on HW VBUS detection which may not work through
+	 * eUSB2 repeater chains (comm_intr stays 0). */
+	mtu3_setbits(mbase, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
+
 	if (mtu->softconnect)
 		mtu3_dev_on_off(mtu, 1);
 }
