@@ -1837,6 +1837,7 @@ static const struct mtk_pin_soc mt8196_data = {
 
 static const struct of_device_id mt8196_pinctrl_of_match[] = {
 	{ .compatible = "mediatek,mt8196-pinctrl", .data = &mt8196_data },
+	{ .compatible = "mediatek,mt6991-pinctrl", .data = &mt8196_data },
 	{ /* sentinel */ }
 };
 
