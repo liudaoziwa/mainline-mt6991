@@ -156,3 +156,56 @@ CONFIG_CMDLINE_FORCE=y
 # CONFIG_MODULE_SIG is not set
 CONFIG_DEBUG_INFO_NONE=y
 # CONFIG_DEBUG_INFO_BTF is not set
+
+# --- DRM Display (panel driver) -------------------------------------------
+# DRM must be built-in (=y) for the panel to probe during boot.  The module
+# build won't work because there's no rootfs to modprobe from.
+#
+# All DRM dependencies MUST be =y or DRM_MEDIATEK gets silently demoted to
+# =m by Kconfig.  This is the full chain needed for MTK DSI output.
+CONFIG_DRM=y
+CONFIG_DRM_MIPI_DSI=y
+CONFIG_DRM_BRIDGE=y
+CONFIG_DRM_PANEL_BRIDGE=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_DRM_FBDEV_OVERALLOC=100
+CONFIG_DRM_CLIENT=y
+CONFIG_DRM_CLIENT_SETUP=y
+CONFIG_DRM_CLIENT_DEFAULT_FBDEV=y
+# Force all DRM core helpers to built-in (defconfig ships them as modules)
+CONFIG_DRM_KMS_HELPER=y
+CONFIG_DRM_CLIENT_LIB=y
+CONFIG_DRM_CLIENT_SELECTION=y
+CONFIG_DRM_DISPLAY_HELPER=y
+CONFIG_DRM_DISPLAY_DSC_HELPER=y
+CONFIG_DRM_DISPLAY_DP_HELPER=y
+CONFIG_DRM_VRAM_HELPER=y
+CONFIG_DRM_TTM_HELPER=y
+CONFIG_DRM_SCHED=y
+CONFIG_DRM_EXEC=y
+CONFIG_DRM_GPUVM=y
+CONFIG_DRM_TTM=y
+CONFIG_DRM_GEM_DMA_HELPER=y
+CONFIG_DRM_GEM_SHMEM_HELPER=y
+CONFIG_DRM_DISPLAY_CONNECTOR=y
+CONFIG_DRM_PANEL_ORIENTATION_QUIRKS=y
+
+# MTK CMDQ (must be =y — its dependency chain blocks DRM_MEDIATEK from =y)
+CONFIG_MTK_CMDQ=y
+CONFIG_MTK_CMDQ_MBOX=y
+CONFIG_MTK_INFRACFG=y
+CONFIG_MAILBOX=y
+
+# MT8196/MT6991 display clock gate drivers (mmsys0/mmsys1/ovl/vdisp)
+CONFIG_COMMON_CLK_MT8196_MMSYS=y
+
+# MTK display subsystem (built-in for MT6991 DSI + OVL + DDP pipeline)
+CONFIG_DRM_MEDIATEK=y
+CONFIG_MTK_MMSYS=y
+CONFIG_PHY_MTK_MIPI_DSI=y
+
+# The ae031 panel driver (1280x2800, DSI video mode, DSC)
+CONFIG_DRM_PANEL_AE031_DSI_VDO=y
+
+# Backlight (built-in so panel can set brightness at boot)
+CONFIG_BACKLIGHT_CLASS_DEVICE=y
