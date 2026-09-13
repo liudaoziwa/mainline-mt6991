@@ -289,6 +289,13 @@ static inline struct mtk_dsi *bridge_to_dsi(struct drm_bridge *b)
 
 static void mtk_dsi_mt6991_match_bootloader(struct mtk_dsi *dsi);
 
+/* Panel hook: lets the panel pick its per-refresh-rate init sequence. */
+#if IS_REACHABLE(CONFIG_DRM_PANEL_AE031_DSI_VDO)
+void ae031_panel_notify_vrefresh(unsigned int vrefresh);
+#else
+static inline void ae031_panel_notify_vrefresh(unsigned int vrefresh) { }
+#endif
+
 static inline struct mtk_dsi *host_to_dsi(struct mipi_dsi_host *h)
 {
 	return container_of(h, struct mtk_dsi, host);
@@ -1022,6 +1029,12 @@ static void mtk_dsi_bridge_mode_set(struct drm_bridge *bridge,
 	struct mtk_dsi *dsi = bridge_to_dsi(bridge);
 
 	drm_display_mode_to_videomode(adjusted, &dsi->vm);
+
+	/*
+	 * mode_set() runs before the bridge chain is disabled/enabled, so the
+	 * panel can still see which refresh rate the next init should use.
+	 */
+	ae031_panel_notify_vrefresh(drm_mode_vrefresh(adjusted));
 }
 
 static void mtk_dsi_bridge_atomic_disable(struct drm_bridge *bridge,
