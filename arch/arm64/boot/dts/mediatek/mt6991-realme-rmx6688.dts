@@ -43,6 +43,7 @@
 			height = <2800>;
 			stride = <5120>;
 			format = "x8r8g8b8";
+			status = "okay";
 		};
 	};
 
@@ -64,6 +65,39 @@
 		 * must not allocate from them.
 		 */
 		#include "mt6991-realme-rmx6688-resmem.dtsi"
+
+		/*
+		 * The vendor reserved the whole bootloader VRAM (0xfd6b0000 +
+		 * 0x2940000, no-map).  We need part of it for the DRM
+		 * framebuffer: the display SMMU (managed by the bootloader,
+		 * not by mainline) only translates the addresses the
+		 * bootloader mapped, so a normal CMA buffer faults and the
+		 * EXDMA freezes.  Disable the vendor reservation and replace
+		 * it with two regions:
+		 *  - the first buffer keeps simplefb / the console alive
+		 *  - the second buffer becomes a shared-dma-pool for the DRM
+		 *    dumb buffer so EXDMA3 fetches a mapped address.
+		 */
+		fb-console@fd6b0000 {
+			compatible = "mediatek,framebuffer";
+			reg = <0x0 0xfd6b0000 0x0 0x00dc0000>;
+			no-map;
+		};
+
+		drm_fb_pool: drm-fb-pool@fe470000 {
+			compatible = "shared-dma-pool";
+			/*
+			 * One 1280x2800x32 framebuffer needs 3500 pages; the
+			 * coherent-pool bitmap only serves power-of-two
+			 * orders, so give it a full 16 MiB (order 12).
+			 */
+			reg = <0x0 0xfe470000 0x0 0x01000000>;
+			/*
+			 * Must be no-map: dma_init_coherent_memory() memremaps
+			 * the region and the kernel refuses to alias System RAM.
+			 */
+			no-map;
+		};
 
 		/*
 		 * Same region the vendor kernel uses for pstore, described as a
@@ -99,11 +133,43 @@
 	 * driver's mandatory vusb33-supply without pretending to control it.
 	 * Same approach as the MT6895 xaga port.
 	 */
-	vusb33: regulator-vusb33 {
+	vusb33: 	regulator-vusb33 {
 		compatible = "regulator-fixed";
 		regulator-name = "vusb33";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
+	 * DSI0 panel power supplies -- simplified regulators for bring-up.
+	 * The real supply chain is: PMIC vddio(1.8V) / vci(3.0V), GPIO vddr.
+	 * These will be replaced once we have proper PMIC/GPIO regulator drivers.
+	 */
+	reg_vddio: regulator-vddio {
+		compatible = "regulator-fixed";
+		regulator-name = "vddio";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	reg_vci: regulator-vci {
+		compatible = "regulator-fixed";
+		regulator-name = "vci";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	reg_vddr: regulator-vddr {
+		compatible = "regulator-fixed";
+		regulator-name = "vddr";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
 		regulator-always-on;
 		regulator-boot-on;
 	};
@@ -173,5 +239,96 @@
 		compatible = "parade,ps5170";
 		reg = <0x28>;
 		status = "okay";
+	};
+};
+
+/*
+ * UFS.  The HCI already works off the bootloader/ATF-configured state
+ * (device reset done, scsi host, MCQ), so this node only hands the
+ * driver the passive freq-table-hz it asks for -- it silences
+ * "freq-table-hz property not specified" and is pure bookkeeping:
+ * clk-scaling itself stays disabled because upstream models neither the
+ * ufs_sel[_min|_max]_src muxes nor dvfsrc-vcore, which is exactly what
+ * the driver's "Clk-scaling not ready" line reports.
+ *
+ * Deliberately absent: a ufsphy node.  Upstream phy-mtk-ufs predates
+ * this SoC's mphy-ver PHY revisioning (the vendor driver reads
+ * "mphy-ver" from DT); hooking it up would make ufs_mtk_mphy_power_on()
+ * reprogram the PHY with mt8183-era sequences on link startup.  The
+ * same reasoning keeps "mphy_rst" out of the resets list: asserting it
+ * in ufs_mtk_host_reset() would knock the ATF-configured PHY back to
+ * POR without any reconfigure step behind it.  The remaining probe
+ * notices ("find ti,syscon-reset fail", the vreg "assuming enabled"
+ * lines) are the same category: vestigial or unmodelable paths whose
+ * absence is the safe configuration.
+ */
+ &ufshci {
+	freq-table-hz = <273000000 499200000>, <0 0>, <0 0>, <0 0>, <0 0>,
+			<0 0>, <0 0>, <0 0>, <0 0>, <0 0>;
+};
+
+&ovl0 {
+	status = "okay";
+	/*
+	 * DMA buffer pool: the display SMMU is owned by the bootloader and
+	 * only maps the bootloader VRAM, so the DRM framebuffer must come
+	 * from there (see drm-fb-pool above).
+	 */
+	memory-region = <&drm_fb_pool>;
+};
+
+/* Superseded by the fb-console + drm-fb-pool split above. */
+&{/reserved-memory/mblock-16-framebuffer@fd6b0000} {
+	status = "disabled";
+};
+
+&color0 {
+	status = "okay";
+};
+
+&ccorr0 {
+	status = "okay";
+};
+
+&aal0 {
+	status = "okay";
+};
+
+&gamma0 {
+	status = "okay";
+};
+
+&postmask0 {
+	status = "okay";
+};
+
+&dither0 {
+	status = "okay";
+};
+
+&dsc0 {
+	status = "okay";
+};
+
+&disp_mutex0 {
+	status = "okay";
+};
+
+&dsi0 {
+	status = "okay";
+
+	panel0: panel@0 {
+		compatible = "oplus,panel-ae031-p-3-a0026-dsi-vdo";
+		reg = <0>;
+		reset-gpios = <&pio 90 GPIO_ACTIVE_HIGH>;
+		vddio-supply = <&reg_vddio>;
+		vddr-supply = <&reg_vddr>;
+		vci-supply = <&reg_vci>;
+
+		port {
+			panel0_in: endpoint {
+				remote-endpoint = <&dsi0_out>;
+			};
+		};
 	};
 };

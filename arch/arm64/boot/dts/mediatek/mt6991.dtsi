@@ -17,6 +17,7 @@
  */
 
 #include <dt-bindings/clock/mediatek,mt8196-clock.h>
+#include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/phy/phy.h>
@@ -443,5 +444,182 @@
 				status = "disabled";
 			};
 		};
+	};
+
+	pio: pinctrl@1002d000 {
+		compatible = "mediatek,mt6991-pinctrl";
+		reg = <0x0 0x1002d000 0x0 0x1000>,
+		      <0x0 0x12000000 0x0 0x1000>,
+		      <0x0 0x12020000 0x0 0x1000>,
+		      <0x0 0x12040000 0x0 0x1000>,
+		      <0x0 0x12060000 0x0 0x1000>,
+		      <0x0 0x12820000 0x0 0x1000>,
+		      <0x0 0x12840000 0x0 0x1000>,
+		      <0x0 0x12860000 0x0 0x1000>,
+		      <0x0 0x13000000 0x0 0x1000>,
+		      <0x0 0x13020000 0x0 0x1000>,
+		      <0x0 0x13040000 0x0 0x1000>,
+		      <0x0 0x130f0000 0x0 0x1000>,
+		      <0x0 0x13110000 0x0 0x1000>,
+		      <0x0 0x13800000 0x0 0x1000>,
+		      <0x0 0x13820000 0x0 0x1000>,
+		      <0x0 0x13860000 0x0 0x1000>;
+		reg-names = "base", "rt", "rm1", "rm2", "rb",
+			    "bm1", "bm2", "bm3",
+			    "lt", "lm1", "lm2", "lb1", "lb2",
+			    "tm1", "tm2", "tm3";
+		#gpio-cells = <2>;
+		gpio-controller;
+	};
+
+	/*
+	 * Display subsystem.
+	 *
+	 * MT6991 uses a different display architecture (EXDMA + BLENDER) than
+	 * Display subsystem -- register-compatible with MT8196.
+	 * mmsys0/mmsys1 use the mt8196 clock drivers; the bit positions are
+	 * identical so <dt-bindings/clock/mediatek,mt8196-clock.h> applies.
+	 */
+	/* Hardware-voter syscon used by display clock gate drivers (HWV) */
+	mm_hwv: syscon@31b00000 {
+		compatible = "mediatek,mt6991-mm_hwv", "syscon";
+		reg = <0x0 0x31b00000 0x0 0x6000>;
+	};
+
+	mmsys0: syscon@32000000 {
+		compatible = "mediatek,mt6991-mmsys0", "syscon";
+		reg = <0x0 0x32000000 0x0 0x1000>;
+		#clock-cells = <1>;
+		mediatek,hardware-voter = <&mm_hwv>;
+	};
+
+	mmsys1: syscon@32400000 {
+		compatible = "mediatek,mt6991-mmsys1", "syscon";
+		reg = <0x0 0x32400000 0x0 0x1000>;
+		#clock-cells = <1>;
+		mediatek,hardware-voter = <&mm_hwv>;
+	};
+
+	ovlsys_config: syscon@32800000 {
+		compatible = "mediatek,mt6991-ovlsys_config", "syscon";
+		reg = <0x0 0x32800000 0x0 0x1000>;
+		#clock-cells = <1>;
+		mediatek,hardware-voter = <&mm_hwv>;
+	};
+
+	ovlsys1_config: syscon@32c00000 {
+		compatible = "mediatek,mt6991-ovlsys1_config", "syscon";
+		reg = <0x0 0x32c00000 0x0 0x1000>;
+		#clock-cells = <1>;
+		mediatek,hardware-voter = <&mm_hwv>;
+	};
+
+	vdisp_ao: syscon@3e800000 {
+		compatible = "mediatek,mt6991-vdisp-ao", "syscon";
+		reg = <0x0 0x3e800000 0x0 0x1000>;
+		#clock-cells = <1>;
+		mediatek,hardware-voter = <&mm_hwv>;
+	};
+
+	disp_mutex0: disp-mutex@32420000 {
+		compatible = "mediatek,mt6991-disp-mutex";
+		reg = <0x0 0x32420000 0x0 0x1000>;
+		clocks = <&mmsys1 CLK_MM1_DISPSYS1_CONFIG>;
+	};
+
+	mipi_tx0: mipi-tx@130b0000 {
+		compatible = "mediatek,mt6991-mipi-tx";
+		reg = <0x0 0x130b0000 0x0 0x1000>;
+		clocks = <&clk26m>;
+		#clock-cells = <0>;
+		#phy-cells = <0>;
+		clock-output-names = "mipi_tx0_pll";
+	};
+
+	dsi0: dsi@32490000 {
+		compatible = "mediatek,mt6991-dsi";
+		reg = <0x0 0x32490000 0x0 0x1000>;
+		interrupts = <GIC_SPI 450 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&mmsys1 CLK_MM1_DISP_DSI0>,
+			 <&mmsys1 CLK_MM1_MOD1>,
+			 <&mipi_tx0>;
+		clock-names = "engine", "digital", "hs";
+		phys = <&mipi_tx0>;
+		phy-names = "dphy";
+		status = "disabled";
+
+		port {
+			dsi0_out: endpoint {
+				remote-endpoint = <&panel0_in>;
+			};
+		};
+	};
+
+	/*
+	 * MT6991 has no classic OVL.  The main display canvas is fetched by
+	 * OVL_EXDMA3 (0x32860000), which feeds the BLENDER1..6 / OUTPROC0
+	 * chain initialised by the bootloader.
+	 */
+	ovl0: ovl@32860000 {
+		compatible = "mediatek,mt6991-disp-ovl-exdma";
+		reg = <0x0 0x32860000 0x0 0x1000>;
+		clocks = <&ovlsys_config CLK_OVL_EXDMA3>;
+		status = "disabled";
+	};
+
+	ovl_exdma4: ovl@32870000 {
+		compatible = "mediatek,mt6991-disp-ovl-exdma";
+		reg = <0x0 0x32870000 0x0 0x1000>;
+		clocks = <&ovlsys_config CLK_OVL_EXDMA4>;
+		status = "disabled";
+	};
+
+	color0: color@320f0000 {
+		compatible = "mediatek,mt6991-disp-color";
+		reg = <0x0 0x320f0000 0x0 0x1000>;
+		clocks = <&mmsys1 CLK_MM1_DISPSYS1_CONFIG>;
+		status = "disabled";
+	};
+
+	ccorr0: ccorr@32090000 {
+		compatible = "mediatek,mt6991-disp-ccorr";
+		reg = <0x0 0x32090000 0x0 0x1000>;
+		clocks = <&mmsys1 CLK_MM1_DISPSYS1_CONFIG>;
+		status = "disabled";
+	};
+
+	aal0: aal@32030000 {
+		compatible = "mediatek,mt6991-disp-aal";
+		reg = <0x0 0x32030000 0x0 0x1000>;
+		clocks = <&mmsys1 CLK_MM1_DISPSYS1_CONFIG>;
+		status = "disabled";
+	};
+
+	gamma0: gamma@32130000 {
+		compatible = "mediatek,mt6991-disp-gamma";
+		reg = <0x0 0x32130000 0x0 0x1000>;
+		clocks = <&mmsys1 CLK_MM1_DISPSYS1_CONFIG>;
+		status = "disabled";
+	};
+
+	postmask0: postmask@32180000 {
+		compatible = "mediatek,mt6991-disp-postmask";
+		reg = <0x0 0x32180000 0x0 0x1000>;
+		clocks = <&mmsys1 CLK_MM1_DISPSYS1_CONFIG>;
+		status = "disabled";
+	};
+
+	dither0: dither@32110000 {
+		compatible = "mediatek,mt6991-disp-dither";
+		reg = <0x0 0x32110000 0x0 0x1000>;
+		clocks = <&mmsys1 CLK_MM1_DISPSYS1_CONFIG>;
+		status = "disabled";
+	};
+
+	dsc0: dsc@32450000 {
+		compatible = "mediatek,mt6991-disp-dsc";
+		reg = <0x0 0x32450000 0x0 0x1000>;
+		clocks = <&mmsys1 CLK_MM1_DISPSYS1_CONFIG>;
+		status = "disabled";
 	};
 };
