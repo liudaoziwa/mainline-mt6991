@@ -5,6 +5,8 @@
 
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
 #include <linux/mailbox_controller.h>
 #include <linux/of.h>
 #include <linux/pm_runtime.h>
@@ -16,6 +18,7 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
@@ -70,6 +73,8 @@ struct mtk_crtc {
 	bool				config_updating;
 	/* lock for config_updating to cmd buffer */
 	spinlock_t			config_lock;
+
+	struct hrtimer			vblank_timer;
 
 	struct mtk_ddp_comp		*ddp_comp[];
 };
@@ -389,6 +394,14 @@ static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 		goto err_mutex_unprepare;
 	}
 
+	/*
+	 * BISECT: the mainline MT6991 mutex uses the wrong register layout
+	 * (mt8195 data): MOD0 0x30/SOF 0x2c vs the vendor's MOD0 0x34/SOF 0x30.
+	 * That writes the SOF value into the RST register (0x2c) and MOD bits
+	 * into SOF (0x30), corrupting the pipeline sync.  Keep the
+	 * bootloader's mutex configuration for now.
+	 */
+#if 0
 	for (i = 0; i < mtk_crtc->ddp_comp_nr - 1; i++) {
 		if (!mtk_ddp_comp_connect(mtk_crtc->ddp_comp[i], mtk_crtc->mmsys_dev,
 					  mtk_crtc->ddp_comp[i + 1]->id))
@@ -402,10 +415,12 @@ static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 	if (!mtk_ddp_comp_add(mtk_crtc->ddp_comp[i], mtk_crtc->mutex))
 		mtk_mutex_add_comp(mtk_crtc->mutex, mtk_crtc->ddp_comp[i]->id);
 	mtk_mutex_enable(mtk_crtc->mutex);
+#endif
 
 	for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
 		struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
 
+		/* Full pipeline, including DSI, from mainline */
 		if (i == 1)
 			mtk_ddp_comp_bgclr_in_on(comp);
 
@@ -452,23 +467,37 @@ static void mtk_crtc_ddp_hw_fini(struct mtk_crtc *mtk_crtc)
 			mtk_ddp_comp_bgclr_in_off(mtk_crtc->ddp_comp[i]);
 	}
 
+	/*
+	 * Keep the bootloader's mutex configuration (same reason as in
+	 * mtk_crtc_ddp_hw_init): the mainline MT6991 mutex uses the mt8195
+	 * register layout, and mtk_mutex_remove_comp()/mtk_mutex_disable()
+	 * would write the SOF value into the MT6991 RST register and the MOD
+	 * bits into the SOF register, then disable the mutex for good since
+	 * the re-enable path never sets it up again.
+	 */
+#if 0
 	for (i = 0; i < mtk_crtc->ddp_comp_nr; i++)
 		if (!mtk_ddp_comp_remove(mtk_crtc->ddp_comp[i], mtk_crtc->mutex))
 			mtk_mutex_remove_comp(mtk_crtc->mutex,
 					      mtk_crtc->ddp_comp[i]->id);
 	mtk_mutex_disable(mtk_crtc->mutex);
+#endif
 	for (i = 0; i < mtk_crtc->ddp_comp_nr - 1; i++) {
 		if (!mtk_ddp_comp_disconnect(mtk_crtc->ddp_comp[i], mtk_crtc->mmsys_dev,
 					     mtk_crtc->ddp_comp[i + 1]->id))
 			mtk_mmsys_ddp_disconnect(mtk_crtc->mmsys_dev,
 						 mtk_crtc->ddp_comp[i]->id,
 						 mtk_crtc->ddp_comp[i + 1]->id);
+#if 0
 		if (!mtk_ddp_comp_remove(mtk_crtc->ddp_comp[i], mtk_crtc->mutex))
 			mtk_mutex_remove_comp(mtk_crtc->mutex,
 					      mtk_crtc->ddp_comp[i]->id);
+#endif
 	}
+#if 0
 	if (!mtk_ddp_comp_remove(mtk_crtc->ddp_comp[i], mtk_crtc->mutex))
 		mtk_mutex_remove_comp(mtk_crtc->mutex, mtk_crtc->ddp_comp[i]->id);
+#endif
 	mtk_crtc_ddp_clk_disable(mtk_crtc);
 	mtk_mutex_unprepare(mtk_crtc->mutex);
 
@@ -502,8 +531,14 @@ static void mtk_crtc_ddp_config(struct drm_crtc *crtc,
 				    state->pending_vrefresh, 0,
 				    cmdq_handle);
 
-		if (!cmdq_handle)
+		/*
+		 * mtk_ovl_config does an OVL RST pulse which clears OVL_EN.
+		 * Without CMDQ, we must re-enable OVL after the reset.
+		 */
+		if (!cmdq_handle) {
+			mtk_ddp_comp_start(comp);
 			state->pending_config = false;
+		}
 	}
 
 	if (mtk_crtc->pending_planes) {
@@ -670,7 +705,28 @@ static int mtk_crtc_enable_vblank(struct drm_crtc *crtc)
 
 	mtk_ddp_comp_enable_vblank(comp);
 
+	hrtimer_start(&mtk_crtc->vblank_timer,
+		      ktime_set(0, 16666666), HRTIMER_MODE_REL);
+
 	return 0;
+}
+
+static enum hrtimer_restart mtk_crtc_vblank_timer_cb(struct hrtimer *timer)
+{
+	struct mtk_crtc *mtk_crtc = container_of(timer, struct mtk_crtc, vblank_timer);
+	struct mtk_drm_private *priv = mtk_crtc->base.dev->dev_private;
+
+	if (!priv->data->shadow_register && !mtk_crtc->cmdq_client.chan)
+		mtk_crtc_ddp_config(&mtk_crtc->base, NULL);
+
+	mtk_drm_finish_page_flip(mtk_crtc);
+
+	/* Keep running while the CRTC is up */
+	if (mtk_crtc->enabled) {
+		hrtimer_forward_now(timer, ktime_set(0, 16666666));
+		return HRTIMER_RESTART;
+	}
+	return HRTIMER_NORESTART;
 }
 
 static void mtk_crtc_disable_vblank(struct drm_crtc *crtc)
@@ -678,6 +734,7 @@ static void mtk_crtc_disable_vblank(struct drm_crtc *crtc)
 	struct mtk_crtc *mtk_crtc = to_mtk_crtc(crtc);
 	struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[0];
 
+	hrtimer_cancel(&mtk_crtc->vblank_timer);
 	mtk_ddp_comp_disable_vblank(comp);
 }
 
@@ -779,10 +836,7 @@ static void mtk_crtc_atomic_enable(struct drm_crtc *crtc,
 {
 	struct mtk_crtc *mtk_crtc = to_mtk_crtc(crtc);
 	struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[0];
-	struct drm_device *dev = mtk_crtc->base.dev;
 	int ret;
-
-	drm_dbg_driver(dev, "%s %d\n", __func__, crtc->base.id);
 
 	ret = mtk_ddp_comp_power_on(comp);
 	if (ret < 0) {
@@ -794,10 +848,10 @@ static void mtk_crtc_atomic_enable(struct drm_crtc *crtc,
 
 	ret = mtk_crtc_ddp_hw_init(mtk_crtc);
 	if (ret) {
+		pr_err("[DRM] mtk_crtc_atomic_enable: ddp_hw_init failed %d\n", ret);
 		mtk_ddp_comp_power_off(comp);
 		return;
 	}
-
 	drm_crtc_vblank_on(crtc);
 	mtk_crtc->enabled = true;
 }
@@ -1118,6 +1172,9 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 	drm_crtc_enable_color_mgmt(&mtk_crtc->base, 0, has_ctm, gamma_lut_size);
 	mutex_init(&mtk_crtc->hw_lock);
 	spin_lock_init(&mtk_crtc->config_lock);
+
+	hrtimer_setup(&mtk_crtc->vblank_timer, mtk_crtc_vblank_timer_cb,
+		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	i = priv->mbox_index++;

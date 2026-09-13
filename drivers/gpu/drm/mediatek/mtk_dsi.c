@@ -27,6 +27,7 @@
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
+#include <drm/display/drm_dsc.h>
 
 #include "mtk_ddp_comp.h"
 #include "mtk_disp_drv.h"
@@ -71,7 +72,7 @@
 
 #define DSI_PSCTRL		0x1c
 #define DSI_PS_WC			GENMASK(13, 0)
-#define DSI_PS_SEL			GENMASK(17, 16)
+#define DSI_PS_SEL			GENMASK(19, 16)
 #define PACKED_PS_16BIT_RGB565		0
 #define PACKED_PS_18BIT_RGB666		1
 #define LOOSELY_PS_24BIT_RGB666		2
@@ -96,6 +97,29 @@
 #define CMDQ_SIZE_SEL		BIT(15)
 
 #define DSI_HSTX_CKL_WC		0x64
+
+/*
+ * MT6991 moved the video-timing register block: VSA/VBP/VFP/VACT live at
+ * +0x40, HSA/HBP/HFP at +0x30, SIZE_CON at 0x2c and HSTX_CKL_WC at 0x100.
+ * Driver data selects the layout; 0 keeps the legacy offsets.
+ */
+#define DSI_VSA_NL_OFS(dsi)		(0x20 + (dsi)->driver_data->reg_40_ofs)
+#define DSI_VBP_NL_OFS(dsi)		(0x24 + (dsi)->driver_data->reg_40_ofs)
+#define DSI_VFP_NL_OFS(dsi)		(0x28 + (dsi)->driver_data->reg_40_ofs)
+#define DSI_VACT_NL_OFS(dsi)		(0x2c + (dsi)->driver_data->reg_40_ofs)
+#define DSI_HSA_WC_OFS(dsi)		(0x50 + (dsi)->driver_data->reg_30_ofs)
+#define DSI_HBP_WC_OFS(dsi)		(0x54 + (dsi)->driver_data->reg_30_ofs)
+#define DSI_HFP_WC_OFS(dsi)		(0x58 + (dsi)->driver_data->reg_30_ofs)
+#define DSI_SIZE_CON_OFS(dsi)		((dsi)->driver_data->dsi_size_con ? \
+					 (dsi)->driver_data->dsi_size_con : 0x38)
+#define DSI_HSTX_CKL_WC_OFS(dsi)	((dsi)->driver_data->dsi_hstx_ckl_wc ? \
+					 (dsi)->driver_data->dsi_hstx_ckl_wc : 0x64)
+#define DSI_CON_CTRL_OFS(dsi)		(0x10 + (dsi)->driver_data->reg_20_ofs)
+#define DSI_MODE_CTRL_OFS(dsi)		(0x14 + (dsi)->driver_data->reg_20_ofs)
+#define DSI_TXRX_CTRL_OFS(dsi)		(0x18 + (dsi)->driver_data->reg_20_ofs)
+#define DSI_PSCTRL_OFS(dsi)		(0x1c + (dsi)->driver_data->reg_20_ofs)
+#define DSI_RACK_OFS(dsi)		(0x84 + (dsi)->driver_data->reg_30_ofs)
+#define DSI_RX_DATA0_OFS(dsi)		(0x74 + (dsi)->driver_data->reg_30_ofs)
 #define HSTX_CKL_WC			GENMASK(15, 2)
 
 #define DSI_RX_DATA0		0x74
@@ -115,6 +139,22 @@
 #define LD0_HS_TX_EN			BIT(0)
 #define LD0_ULPM_EN			BIT(1)
 #define LD0_WAKEUP_EN			BIT(2)
+
+/*
+ * MT6991 moved the DPHY control/timing registers: the timing block sits at
+ * 0x600 (0x110 is VM_CMD_CON there!) and LCCON/LD0CON at 0x1d0/0x1d4.
+ * These helpers keep the legacy layout for the older SoCs.
+ */
+#define DSI_PHY_LCCON_OFS(dsi) \
+	((dsi)->driver_data->reg_phy_base ? 0x1d0 : DSI_PHY_LCCON)
+#define DSI_PHY_LD0CON_OFS(dsi) \
+	((dsi)->driver_data->reg_phy_base ? 0x1d4 : DSI_PHY_LD0CON)
+#define DSI_PHY_TIMECON0_OFS(dsi) \
+	((dsi)->driver_data->reg_phy_base ? (dsi)->driver_data->reg_phy_base : \
+	 DSI_PHY_TIMECON0)
+#define DSI_PHY_TIMECON1_OFS(dsi)	(DSI_PHY_TIMECON0_OFS(dsi) + 0x4)
+#define DSI_PHY_TIMECON2_OFS(dsi)	(DSI_PHY_TIMECON0_OFS(dsi) + 0x8)
+#define DSI_PHY_TIMECON3_OFS(dsi)	(DSI_PHY_TIMECON0_OFS(dsi) + 0xc)
 
 #define DSI_PHY_TIMECON0	0x110
 #define LPX				GENMASK(7, 0)
@@ -188,12 +228,21 @@ struct phy;
 
 struct mtk_dsi_driver_data {
 	const u32 reg_cmdq_off;
+	const u32 reg_cmdq_con_off;
 	const u32 reg_vm_cmd_off;
 	const u32 reg_shadow_dbg_off;
+	const u32 reg_20_ofs;
+	const u32 reg_phy_base;
+	const u32 phy_timing_rate;
+	const u32 reg_30_ofs;
+	const u32 reg_40_ofs;
+	const u32 dsi_size_con;
+	const u32 dsi_hstx_ckl_wc;
 	bool has_shadow_ctl;
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
+	bool poll_for_idle;
 };
 
 struct mtk_dsi {
@@ -221,15 +270,24 @@ struct mtk_dsi {
 	int refcount;
 	bool enabled;
 	bool lanes_ready;
+	/*
+	 * BISECT: the bootloader already brought up the DSI and the panel.
+	 * Skip the first pre_enable/enable so mainline does not reinitialise
+	 * the link; cleared after the first enable.
+	 */
+	bool boot_handoff;
 	u32 irq_data;
 	wait_queue_head_t irq_wait_queue;
 	const struct mtk_dsi_driver_data *driver_data;
+	const struct drm_dsc_config *dsc;
 };
 
 static inline struct mtk_dsi *bridge_to_dsi(struct drm_bridge *b)
 {
 	return container_of(b, struct mtk_dsi, bridge);
 }
+
+static void mtk_dsi_mt6991_match_bootloader(struct mtk_dsi *dsi);
 
 static inline struct mtk_dsi *host_to_dsi(struct mipi_dsi_host *h)
 {
@@ -249,6 +307,54 @@ static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 	u32 data_rate_mhz = DIV_ROUND_UP(dsi->data_rate, HZ_PER_MHZ);
 	struct mtk_phy_timing *timing = &dsi->phy_timing;
 
+	if (dsi->driver_data->phy_timing_rate) {
+		/*
+		 * MT6991 vendor formulas.  The vendor feeds these with
+		 * pll_clk * 2 (1168 for this panel) rather than the actual
+		 * link rate, and uses different coefficients from upstream.
+		 * The resulting values match the bootloader's PHY registers
+		 * exactly, which is what the panel link needs.
+		 */
+		u32 rate = dsi->driver_data->phy_timing_rate;
+
+		timing->lpx = rate * 80 / 8000 + 1;
+		timing->lpx = (timing->lpx % 2) ? timing->lpx + 1 : timing->lpx;
+
+		timing->da_hs_prepare = (rate * 59 + 4000) / 8000 + 1;
+		timing->da_hs_prepare = (timing->da_hs_prepare % 2) ?
+					timing->da_hs_prepare + 1 :
+					timing->da_hs_prepare;
+
+		timing->da_hs_zero = (rate * 163 + 11000) / 8000 + 1 -
+				     timing->da_hs_prepare;
+
+		timing->da_hs_trail = (rate < 740) ?
+				      (rate * 66 + 44300) / 8000 + 1 :
+				      (rate * 66 + 42000) / 8000 + 1;
+
+		timing->da_hs_exit = rate * 118 / 8000 + 1;
+		timing->da_hs_exit = (timing->da_hs_exit % 2) ?
+				     timing->da_hs_exit + 2 :
+				     timing->da_hs_exit + 1;
+
+		timing->clk_hs_prepare = rate * 57 / 8000 + 1;
+		timing->clk_hs_prepare = (timing->clk_hs_prepare % 2) ?
+					 timing->clk_hs_prepare + 1 :
+					 timing->clk_hs_prepare;
+
+		timing->clk_hs_zero = rate * 330 / 8000 + 1 -
+				      timing->clk_hs_prepare;
+		timing->clk_hs_trail = (rate * 65 + 52000) / 8000 + 1;
+		timing->clk_hs_post = (rate * 65 + 53000) / 8000 + 1;
+		timing->clk_hs_exit = rate * 118 / 8000 + 1;
+
+		timing->ta_go = 4 * timing->lpx;
+		timing->ta_get = 5 * timing->lpx;
+		timing->ta_sure = 3 * timing->lpx / 2;
+
+		goto pack;
+	}
+
 	timing->lpx = (60 * data_rate_mhz / (8 * 1000)) + 1;
 	timing->da_hs_prepare = (80 * data_rate_mhz + 4 * 1000) / 8000;
 	timing->da_hs_zero = (170 * data_rate_mhz + 10 * 1000) / 8000 + 1 -
@@ -266,6 +372,7 @@ static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 	timing->clk_hs_zero = timing->clk_hs_trail * 4;
 	timing->clk_hs_exit = 2 * timing->clk_hs_trail;
 
+pack:
 	timcon0 = FIELD_PREP(LPX, timing->lpx) |
 		  FIELD_PREP(HS_PREP, timing->da_hs_prepare) |
 		  FIELD_PREP(HS_ZERO, timing->da_hs_zero) |
@@ -284,71 +391,71 @@ static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 		  FIELD_PREP(CLK_HS_POST, timing->clk_hs_post) |
 		  FIELD_PREP(CLK_HS_EXIT, timing->clk_hs_exit);
 
-	writel(timcon0, dsi->regs + DSI_PHY_TIMECON0);
-	writel(timcon1, dsi->regs + DSI_PHY_TIMECON1);
-	writel(timcon2, dsi->regs + DSI_PHY_TIMECON2);
-	writel(timcon3, dsi->regs + DSI_PHY_TIMECON3);
+	writel(timcon0, dsi->regs + DSI_PHY_TIMECON0_OFS(dsi));
+	writel(timcon1, dsi->regs + DSI_PHY_TIMECON1_OFS(dsi));
+	writel(timcon2, dsi->regs + DSI_PHY_TIMECON2_OFS(dsi));
+	writel(timcon3, dsi->regs + DSI_PHY_TIMECON3_OFS(dsi));
 }
 
 static void mtk_dsi_enable(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_EN, DSI_EN);
+	mtk_dsi_mask(dsi, DSI_CON_CTRL_OFS(dsi), DSI_EN, DSI_EN);
 }
 
 static void mtk_dsi_disable(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_EN, 0);
+	mtk_dsi_mask(dsi, DSI_CON_CTRL_OFS(dsi), DSI_EN, 0);
 }
 
 static void mtk_dsi_reset_engine(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_RESET, DSI_RESET);
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, DSI_RESET, 0);
+	mtk_dsi_mask(dsi, DSI_CON_CTRL_OFS(dsi), DSI_RESET, DSI_RESET);
+	mtk_dsi_mask(dsi, DSI_CON_CTRL_OFS(dsi), DSI_RESET, 0);
 }
 
 static void mtk_dsi_reset_dphy(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, DPHY_RESET, DPHY_RESET);
-	mtk_dsi_mask(dsi, DSI_CON_CTRL, DPHY_RESET, 0);
+	mtk_dsi_mask(dsi, DSI_CON_CTRL_OFS(dsi), DPHY_RESET, DPHY_RESET);
+	mtk_dsi_mask(dsi, DSI_CON_CTRL_OFS(dsi), DPHY_RESET, 0);
 }
 
 static void mtk_dsi_clk_ulp_mode_enter(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_PHY_LCCON, LC_HS_TX_EN, 0);
-	mtk_dsi_mask(dsi, DSI_PHY_LCCON, LC_ULPM_EN, 0);
+	mtk_dsi_mask(dsi, DSI_PHY_LCCON_OFS(dsi), LC_HS_TX_EN, 0);
+	mtk_dsi_mask(dsi, DSI_PHY_LCCON_OFS(dsi), LC_ULPM_EN, 0);
 }
 
 static void mtk_dsi_clk_ulp_mode_leave(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_PHY_LCCON, LC_ULPM_EN, 0);
-	mtk_dsi_mask(dsi, DSI_PHY_LCCON, LC_WAKEUP_EN, LC_WAKEUP_EN);
-	mtk_dsi_mask(dsi, DSI_PHY_LCCON, LC_WAKEUP_EN, 0);
+	mtk_dsi_mask(dsi, DSI_PHY_LCCON_OFS(dsi), LC_ULPM_EN, 0);
+	mtk_dsi_mask(dsi, DSI_PHY_LCCON_OFS(dsi), LC_WAKEUP_EN, LC_WAKEUP_EN);
+	mtk_dsi_mask(dsi, DSI_PHY_LCCON_OFS(dsi), LC_WAKEUP_EN, 0);
 }
 
 static void mtk_dsi_lane0_ulp_mode_enter(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_PHY_LD0CON, LD0_HS_TX_EN, 0);
-	mtk_dsi_mask(dsi, DSI_PHY_LD0CON, LD0_ULPM_EN, 0);
+	mtk_dsi_mask(dsi, DSI_PHY_LD0CON_OFS(dsi), LD0_HS_TX_EN, 0);
+	mtk_dsi_mask(dsi, DSI_PHY_LD0CON_OFS(dsi), LD0_ULPM_EN, 0);
 }
 
 static void mtk_dsi_lane0_ulp_mode_leave(struct mtk_dsi *dsi)
 {
-	mtk_dsi_mask(dsi, DSI_PHY_LD0CON, LD0_ULPM_EN, 0);
-	mtk_dsi_mask(dsi, DSI_PHY_LD0CON, LD0_WAKEUP_EN, LD0_WAKEUP_EN);
-	mtk_dsi_mask(dsi, DSI_PHY_LD0CON, LD0_WAKEUP_EN, 0);
+	mtk_dsi_mask(dsi, DSI_PHY_LD0CON_OFS(dsi), LD0_ULPM_EN, 0);
+	mtk_dsi_mask(dsi, DSI_PHY_LD0CON_OFS(dsi), LD0_WAKEUP_EN, LD0_WAKEUP_EN);
+	mtk_dsi_mask(dsi, DSI_PHY_LD0CON_OFS(dsi), LD0_WAKEUP_EN, 0);
 }
 
 static bool mtk_dsi_clk_hs_state(struct mtk_dsi *dsi)
 {
-	return readl(dsi->regs + DSI_PHY_LCCON) & LC_HS_TX_EN;
+	return readl(dsi->regs + DSI_PHY_LCCON_OFS(dsi)) & LC_HS_TX_EN;
 }
 
 static void mtk_dsi_clk_hs_mode(struct mtk_dsi *dsi, bool enter)
 {
 	if (enter && !mtk_dsi_clk_hs_state(dsi))
-		mtk_dsi_mask(dsi, DSI_PHY_LCCON, LC_HS_TX_EN, LC_HS_TX_EN);
+		mtk_dsi_mask(dsi, DSI_PHY_LCCON_OFS(dsi), LC_HS_TX_EN, LC_HS_TX_EN);
 	else if (!enter && mtk_dsi_clk_hs_state(dsi))
-		mtk_dsi_mask(dsi, DSI_PHY_LCCON, LC_HS_TX_EN, 0);
+		mtk_dsi_mask(dsi, DSI_PHY_LCCON_OFS(dsi), LC_HS_TX_EN, 0);
 }
 
 static void mtk_dsi_set_mode(struct mtk_dsi *dsi)
@@ -364,7 +471,7 @@ static void mtk_dsi_set_mode(struct mtk_dsi *dsi)
 			vid_mode = SYNC_EVENT_MODE;
 	}
 
-	writel(vid_mode, dsi->regs + DSI_MODE_CTRL);
+	writel(vid_mode, dsi->regs + DSI_MODE_CTRL_OFS(dsi));
 }
 
 static void mtk_dsi_set_vm_cmd(struct mtk_dsi *dsi)
@@ -390,46 +497,54 @@ static void mtk_dsi_rxtx_control(struct mtk_dsi *dsi)
 	if (dsi->mode_flags & MIPI_DSI_MODE_NO_EOT_PACKET)
 		regval |= DIS_EOT;
 
-	writel(regval, dsi->regs + DSI_TXRX_CTRL);
+	writel(regval, dsi->regs + DSI_TXRX_CTRL_OFS(dsi));
 }
 
 static void mtk_dsi_ps_control(struct mtk_dsi *dsi, bool config_vact)
 {
 	u32 dsi_buf_bpp, ps_val, ps_wc, vact_nl;
+	const struct drm_dsc_config *dsc = dsi->dsc;
 
 	if (dsi->format == MIPI_DSI_FMT_RGB565)
 		dsi_buf_bpp = 2;
 	else
 		dsi_buf_bpp = 3;
 
-	/* Word count */
-	ps_wc = FIELD_PREP(DSI_PS_WC, dsi->vm.hactive * dsi_buf_bpp);
-	ps_val = ps_wc;
+	if (dsc && dsc->bits_per_pixel) {
+		/* DSC mode: PS word count = chunk_size * slice_count */
+		ps_wc = dsc->slice_chunk_size * dsc->slice_count;
+		ps_val = FIELD_PREP(DSI_PS_WC, ps_wc);
+		ps_val |= FIELD_PREP(DSI_PS_SEL, 5);
+	} else {
+		/* Standard mode */
+		ps_wc = FIELD_PREP(DSI_PS_WC, dsi->vm.hactive * dsi_buf_bpp);
+		ps_val = ps_wc;
 
-	/* Pixel Stream type */
-	switch (dsi->format) {
-	default:
-		fallthrough;
-	case MIPI_DSI_FMT_RGB888:
-		ps_val |= FIELD_PREP(DSI_PS_SEL, PACKED_PS_24BIT_RGB888);
-		break;
-	case MIPI_DSI_FMT_RGB666:
-		ps_val |= FIELD_PREP(DSI_PS_SEL, LOOSELY_PS_24BIT_RGB666);
-		break;
-	case MIPI_DSI_FMT_RGB666_PACKED:
-		ps_val |= FIELD_PREP(DSI_PS_SEL, PACKED_PS_18BIT_RGB666);
-		break;
-	case MIPI_DSI_FMT_RGB565:
-		ps_val |= FIELD_PREP(DSI_PS_SEL, PACKED_PS_16BIT_RGB565);
-		break;
+		/* Pixel Stream type */
+		switch (dsi->format) {
+		default:
+			fallthrough;
+		case MIPI_DSI_FMT_RGB888:
+			ps_val |= FIELD_PREP(DSI_PS_SEL, PACKED_PS_24BIT_RGB888);
+			break;
+		case MIPI_DSI_FMT_RGB666:
+			ps_val |= FIELD_PREP(DSI_PS_SEL, LOOSELY_PS_24BIT_RGB666);
+			break;
+		case MIPI_DSI_FMT_RGB666_PACKED:
+			ps_val |= FIELD_PREP(DSI_PS_SEL, PACKED_PS_18BIT_RGB666);
+			break;
+		case MIPI_DSI_FMT_RGB565:
+			ps_val |= FIELD_PREP(DSI_PS_SEL, PACKED_PS_16BIT_RGB565);
+			break;
+		}
 	}
 
 	if (config_vact) {
 		vact_nl = FIELD_PREP(VACT_NL, dsi->vm.vactive);
-		writel(vact_nl, dsi->regs + DSI_VACT_NL);
-		writel(ps_wc, dsi->regs + DSI_HSTX_CKL_WC);
+		writel(vact_nl, dsi->regs + DSI_VACT_NL_OFS(dsi));
+		writel(ps_wc, dsi->regs + DSI_HSTX_CKL_WC_OFS(dsi));
 	}
-	writel(ps_val, dsi->regs + DSI_PSCTRL);
+	writel(ps_val, dsi->regs + DSI_PSCTRL_OFS(dsi));
 }
 
 static void mtk_dsi_config_vdo_timing_per_frame_lp(struct mtk_dsi *dsi)
@@ -452,7 +567,13 @@ static void mtk_dsi_config_vdo_timing_per_frame_lp(struct mtk_dsi *dsi)
 		dsi_tmp_buf_bpp = 3;
 
 	da_hs_trail = dsi->phy_timing.da_hs_trail;
-	ps_wc = vm->hactive * dsi_tmp_buf_bpp;
+
+	/* DSC mode: use chunk size for PS word count */
+	if (dsi->dsc && dsi->dsc->bits_per_pixel) {
+		ps_wc = dsi->dsc->slice_chunk_size * dsi->dsc->slice_count;
+	} else {
+		ps_wc = vm->hactive * dsi_tmp_buf_bpp;
+	}
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE) {
 		horizontal_sync_active_byte =
@@ -488,16 +609,16 @@ static void mtk_dsi_config_vdo_timing_per_frame_lp(struct mtk_dsi *dsi)
 			   ps_wc), dsi->lanes) + da_hs_trail + 1) * dsi->lanes / 6 - 1;
 
 	hstx_cklp_wc = FIELD_PREP(HSTX_CKL_WC, (hstx_cklp_wc_min + hstx_cklp_wc_max) / 2);
-	writel(hstx_cklp_wc, dsi->regs + DSI_HSTX_CKL_WC);
+	writel(hstx_cklp_wc, dsi->regs + DSI_HSTX_CKL_WC_OFS(dsi));
 
 	hs_vb_ps_wc = ps_wc - (dsi->phy_timing.lpx + dsi->phy_timing.da_hs_exit +
 		      dsi->phy_timing.da_hs_prepare + dsi->phy_timing.da_hs_zero + 2) * dsi->lanes;
 	horizontal_frontporch_byte |= FIELD_PREP(HFP_HS_EN, 1) |
 				      FIELD_PREP(HFP_HS_VB_PS_WC, hs_vb_ps_wc);
 
-	writel(horizontal_sync_active_byte, dsi->regs + DSI_HSA_WC);
-	writel(horizontal_backporch_byte, dsi->regs + DSI_HBP_WC);
-	writel(horizontal_frontporch_byte, dsi->regs + DSI_HFP_WC);
+	writel(horizontal_sync_active_byte, dsi->regs + DSI_HSA_WC_OFS(dsi));
+	writel(horizontal_backporch_byte, dsi->regs + DSI_HBP_WC_OFS(dsi));
+	writel(horizontal_frontporch_byte, dsi->regs + DSI_HFP_WC_OFS(dsi));
 }
 
 static void mtk_dsi_config_vdo_timing_per_line_lp(struct mtk_dsi *dsi)
@@ -560,24 +681,40 @@ static void mtk_dsi_config_vdo_timing_per_line_lp(struct mtk_dsi *dsi)
 			(vm->hactive * dsi_tmp_buf_bpp + 2) % dsi->lanes;
 	}
 
-	writel(horizontal_sync_active_byte, dsi->regs + DSI_HSA_WC);
-	writel(horizontal_backporch_byte, dsi->regs + DSI_HBP_WC);
-	writel(horizontal_frontporch_byte, dsi->regs + DSI_HFP_WC);
+	writel(horizontal_sync_active_byte, dsi->regs + DSI_HSA_WC_OFS(dsi));
+	writel(horizontal_backporch_byte, dsi->regs + DSI_HBP_WC_OFS(dsi));
+	writel(horizontal_frontporch_byte, dsi->regs + DSI_HFP_WC_OFS(dsi));
 }
 
 static void mtk_dsi_config_vdo_timing(struct mtk_dsi *dsi)
 {
 	struct videomode *vm = &dsi->vm;
 
-	writel(vm->vsync_len, dsi->regs + DSI_VSA_NL);
-	writel(vm->vback_porch, dsi->regs + DSI_VBP_NL);
-	writel(vm->vfront_porch, dsi->regs + DSI_VFP_NL);
-	writel(vm->vactive, dsi->regs + DSI_VACT_NL);
+	writel(vm->vsync_len, dsi->regs + DSI_VSA_NL_OFS(dsi));
+	writel(vm->vback_porch, dsi->regs + DSI_VBP_NL_OFS(dsi));
+	writel(vm->vfront_porch, dsi->regs + DSI_VFP_NL_OFS(dsi));
+	writel(vm->vactive, dsi->regs + DSI_VACT_NL_OFS(dsi));
 
-	if (dsi->driver_data->has_size_ctl)
+	if (dsi->driver_data->has_size_ctl) {
+		u32 width = vm->hactive;
+
+		/*
+		 * For DSC the DSI frame size is expressed in pixel-stream
+		 * buffer units: word-count / bytes-per-pixel (3 for RGB888).
+		 * The bootloader writes 427 for our 1280-wide panel; hactive
+		 * would desynchronise the panel.
+		 */
+		if (dsi->dsc && dsi->dsc->bits_per_pixel) {
+			u32 ps_wc = dsi->dsc->slice_chunk_size *
+				    dsi->dsc->slice_count;
+
+			width = DIV_ROUND_UP(ps_wc, 3);
+		}
+
 		writel(FIELD_PREP(DSI_HEIGHT, vm->vactive) |
-			FIELD_PREP(DSI_WIDTH, vm->hactive),
-			dsi->regs + DSI_SIZE_CON);
+		       FIELD_PREP(DSI_WIDTH, width),
+		       dsi->regs + DSI_SIZE_CON_OFS(dsi));
+	}
 
 	if (dsi->driver_data->support_per_frame_lp)
 		mtk_dsi_config_vdo_timing_per_frame_lp(dsi);
@@ -600,7 +737,7 @@ static void mtk_dsi_stop(struct mtk_dsi *dsi)
 
 static void mtk_dsi_set_cmd_mode(struct mtk_dsi *dsi)
 {
-	writel(CMD_MODE, dsi->regs + DSI_MODE_CTRL);
+	writel(CMD_MODE, dsi->regs + DSI_MODE_CTRL_OFS(dsi));
 }
 
 static void mtk_dsi_set_interrupt_enable(struct mtk_dsi *dsi)
@@ -627,6 +764,39 @@ static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 	unsigned long jiffies = msecs_to_jiffies(timeout);
 	struct drm_device *drm = dsi->bridge.dev;
 
+	if (dsi->driver_data->poll_for_idle) {
+		/*
+		 * MT6991: the DSI interrupt line is not routed to the GIC
+		 * (same as the rest of the display subsystem), so poll the
+		 * status register like the vendor driver does instead of
+		 * waiting for the interrupt.
+		 */
+		ktime_t end = ktime_add_ms(ktime_get(), timeout);
+		u32 status;
+
+		for (;;) {
+			status = readl(dsi->regs + DSI_INTSTA) & irq_flag;
+			if (status || (dsi->irq_data & irq_flag)) {
+				mtk_dsi_mask(dsi, DSI_INTSTA, status, 0);
+				mtk_dsi_irq_data_set(dsi, status);
+				ret = 1;
+				break;
+			}
+			if (ktime_after(ktime_get(), end))
+				break;
+			usleep_range(50, 100);
+		}
+
+		if (!ret) {
+			drm_warn(drm, "Wait DSI IRQ(0x%08x) poll timeout\n",
+				 irq_flag);
+			mtk_dsi_enable(dsi);
+			mtk_dsi_reset_engine(dsi);
+		}
+
+		return ret;
+	}
+
 	ret = wait_event_interruptible_timeout(dsi->irq_wait_queue,
 					       dsi->irq_data & irq_flag,
 					       jiffies);
@@ -650,7 +820,7 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 
 	if (status) {
 		do {
-			mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
+			mtk_dsi_mask(dsi, DSI_RACK_OFS(dsi), RACK, RACK);
 			tmp = readl(dsi->regs + DSI_INTSTA);
 		} while (tmp & DSI_BUSY);
 
@@ -707,6 +877,10 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	}
 	bit_per_pixel = ret;
 
+	/* DSC mode: use compressed bpp for data rate */
+	if (dsi->dsc && dsi->dsc->bits_per_pixel)
+		bit_per_pixel = dsi->dsc->bits_per_pixel >> 4;
+
 	dsi->data_rate = DIV_ROUND_UP_ULL(dsi->vm.pixelclock * bit_per_pixel,
 					  dsi->lanes);
 
@@ -744,6 +918,9 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	mtk_dsi_config_vdo_timing(dsi);
 	mtk_dsi_set_interrupt_enable(dsi);
 
+	if (dsi->driver_data->reg_phy_base)
+		mtk_dsi_mt6991_match_bootloader(dsi);
+
 	return 0;
 err_disable_engine_clk:
 	clk_disable_unprepare(dsi->engine_clk);
@@ -776,7 +953,7 @@ static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 	mtk_dsi_lane0_ulp_mode_enter(dsi);
 	mtk_dsi_clk_ulp_mode_enter(dsi);
 	/* set the lane number as 0 to pull down mipi */
-	writel(0, dsi->regs + DSI_TXRX_CTRL);
+	writel(0, dsi->regs + DSI_TXRX_CTRL_OFS(dsi));
 
 	mtk_dsi_disable(dsi);
 
@@ -788,13 +965,33 @@ static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 	dsi->lanes_ready = false;
 }
 
+/*
+ * MT6991: the panel was initialised by the bootloader and only locks onto a
+ * DSI stream that matches some of the state the bootloader leaves behind.
+ * These two writes are the bootloader values the mainline configuration does
+ * not produce on its own and that survive the rest of the enable sequence.
+ */
+static void mtk_dsi_mt6991_match_bootloader(struct mtk_dsi *dsi)
+{
+	/* HSTX clock-lane LP word count (bootloader value) */
+	writel(0x00010000, dsi->regs + DSI_HSTX_CKL_WC_OFS(dsi));
+
+	/* PHY/config register at 0x104 (bootloader value) */
+	writel(0x91, dsi->regs + 0x104);
+}
+
 static void mtk_output_dsi_enable(struct mtk_dsi *dsi)
 {
-	if (dsi->enabled)
+	if (dsi->enabled) {
 		return;
+	}
 
 	mtk_dsi_set_mode(dsi);
 	mtk_dsi_start(dsi);
+
+	/* MT6991: the bootloader leaves DSI_START.VM_CMD_START set */
+	if (dsi->driver_data->reg_phy_base)
+		mtk_dsi_mask(dsi, DSI_START, BIT(16), BIT(16));
 
 	dsi->enabled = true;
 }
@@ -881,10 +1078,29 @@ mtk_dsi_bridge_mode_valid(struct drm_bridge *bridge,
 	if (bpp < 0)
 		return MODE_ERROR;
 
-	if (mode->clock * bpp / dsi->lanes > 1500000)
+	/* DSC mode: use compressed bpp for bandwidth check */
+	if (dsi->dsc && dsi->dsc->bits_per_pixel)
+		bpp = dsi->dsc->bits_per_pixel >> 4;
+
+	if (mode->clock * bpp / dsi->lanes > 4000000)
 		return MODE_CLOCK_HIGH;
 
 	return MODE_OK;
+}
+
+static int mtk_dsi_bridge_get_modes(struct drm_bridge *bridge,
+				    struct drm_connector *connector)
+{
+	struct mtk_dsi *dsi = bridge_to_dsi(bridge);
+
+
+	if (dsi->next_bridge && dsi->next_bridge->funcs &&
+	    dsi->next_bridge->funcs->get_modes) {
+		int ret = dsi->next_bridge->funcs->get_modes(dsi->next_bridge, connector);
+		return ret;
+	}
+
+	return 0;
 }
 
 static const struct drm_bridge_funcs mtk_dsi_bridge_funcs = {
@@ -898,6 +1114,7 @@ static const struct drm_bridge_funcs mtk_dsi_bridge_funcs = {
 	.atomic_reset = drm_atomic_helper_bridge_reset,
 	.mode_valid = mtk_dsi_bridge_mode_valid,
 	.mode_set = mtk_dsi_bridge_mode_set,
+	.get_modes = mtk_dsi_bridge_get_modes,
 };
 
 void mtk_dsi_ddp_start(struct device *dev)
@@ -992,9 +1209,11 @@ static int mtk_dsi_host_attach(struct mipi_dsi_host *host,
 	struct drm_device *drm = dsi->bridge.dev;
 	int ret;
 
+
 	dsi->lanes = device->lanes;
 	dsi->format = device->format;
 	dsi->mode_flags = device->mode_flags;
+	dsi->dsc = device->dsc;
 	dsi->next_bridge = devm_drm_of_get_bridge(dev, dev->of_node, 1, 0);
 	if (IS_ERR(dsi->next_bridge)) {
 		ret = PTR_ERR(dsi->next_bridge);
@@ -1074,6 +1293,8 @@ static void mtk_dsi_cmdq(struct mtk_dsi *dsi, const struct mipi_dsi_msg *msg)
 	u8 config, cmdq_size, cmdq_off, type = msg->type;
 	u32 reg_val, cmdq_mask, i;
 	u32 reg_cmdq_off = dsi->driver_data->reg_cmdq_off;
+	u32 reg_cmdq_con_off = dsi->driver_data->reg_cmdq_con_off ?
+			       dsi->driver_data->reg_cmdq_con_off : DSI_CMDQ_SIZE;
 
 	if (MTK_DSI_HOST_IS_READ(type))
 		config = BTA;
@@ -1101,10 +1322,11 @@ static void mtk_dsi_cmdq(struct mtk_dsi *dsi, const struct mipi_dsi_msg *msg)
 			     tx_buf[i] << (((i + cmdq_off) & 3U) * 8U));
 
 	mtk_dsi_mask(dsi, reg_cmdq_off, cmdq_mask, reg_val);
-	mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE, cmdq_size);
+	mtk_dsi_mask(dsi, reg_cmdq_con_off, CMDQ_SIZE, cmdq_size);
 	if (dsi->driver_data->cmdq_long_packet_ctl) {
 		/* Disable setting cmdq_size automatically for long packets */
-		mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE_SEL, CMDQ_SIZE_SEL);
+		mtk_dsi_mask(dsi, reg_cmdq_con_off, CMDQ_SIZE_SEL,
+			     CMDQ_SIZE_SEL);
 	}
 }
 
@@ -1134,7 +1356,7 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 	u32 dsi_mode;
 	int ret, i;
 
-	dsi_mode = readl(dsi->regs + DSI_MODE_CTRL);
+	dsi_mode = readl(dsi->regs + DSI_MODE_CTRL_OFS(dsi));
 	if (dsi_mode & MODE) {
 		mtk_dsi_stop(dsi);
 		ret = mtk_dsi_switch_to_cmd_mode(dsi, VM_DONE_INT_FLAG, 500);
@@ -1163,7 +1385,7 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 	}
 
 	for (i = 0; i < 16; i++)
-		*(read_data + i) = readb(dsi->regs + DSI_RX_DATA0 + i);
+		*(read_data + i) = readb(dsi->regs + DSI_RX_DATA0_OFS(dsi) + i);
 
 	recv_cnt = mtk_dsi_recv_cnt(read_data[0], read_data);
 
@@ -1251,8 +1473,16 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to register DSI host\n");
 
+	/* Clear and disable DSI interrupts before requesting IRQ (vendor style) */
+	writel(0, dsi->regs + DSI_INTSTA);
+	writel(0, dsi->regs + DSI_INTEN);
+	irq_set_status_flags(irq_num, IRQ_TYPE_LEVEL_HIGH);
+
+	dev_dbg(dev, "DSI irq_num=%d, desc=%p\n", irq_num, irq_to_desc(irq_num));
+
 	ret = devm_request_irq(&pdev->dev, irq_num, mtk_dsi_irq,
-			       IRQF_TRIGGER_NONE, dev_name(&pdev->dev), dsi);
+			       IRQF_TRIGGER_NONE | IRQF_SHARED,
+			       dev_name(&pdev->dev), dsi);
 	if (ret) {
 		mipi_dsi_host_unregister(&dsi->host);
 		return dev_err_probe(&pdev->dev, ret, "Failed to request DSI irq\n");
@@ -1260,6 +1490,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 
 	dsi->bridge.of_node = dev->of_node;
 	dsi->bridge.type = DRM_MODE_CONNECTOR_DSI;
+	dsi->bridge.ops = DRM_BRIDGE_OP_MODES;
 
 	return 0;
 }
@@ -1310,6 +1541,25 @@ static const struct mtk_dsi_driver_data mt8188_dsi_driver_data = {
 	.support_per_frame_lp = true,
 };
 
+static const struct mtk_dsi_driver_data mt6991_dsi_driver_data = {
+	.reg_cmdq_off = 0x400,
+	.reg_cmdq_con_off = 0x44,
+	.reg_vm_cmd_off = 0x110,
+	.reg_shadow_dbg_off = 0x0,
+	.reg_phy_base = 0x600,
+	.phy_timing_rate = 1168,
+	.reg_20_ofs = 0x20,
+	.reg_30_ofs = 0x30,
+	.reg_40_ofs = 0x40,
+	.dsi_size_con = 0x2c,
+	.dsi_hstx_ckl_wc = 0x100,
+	.has_shadow_ctl = false,
+	.has_size_ctl = true,
+	.cmdq_long_packet_ctl = true,
+	.support_per_frame_lp = true,
+	.poll_for_idle = true,
+};
+
 static const struct of_device_id mtk_dsi_of_match[] = {
 	{ .compatible = "mediatek,mt2701-dsi", .data = &mt2701_dsi_driver_data },
 	{ .compatible = "mediatek,mt8167-dsi", .data = &mt2701_dsi_driver_data },
@@ -1317,6 +1567,7 @@ static const struct of_device_id mtk_dsi_of_match[] = {
 	{ .compatible = "mediatek,mt8183-dsi", .data = &mt8183_dsi_driver_data },
 	{ .compatible = "mediatek,mt8186-dsi", .data = &mt8186_dsi_driver_data },
 	{ .compatible = "mediatek,mt8188-dsi", .data = &mt8188_dsi_driver_data },
+	{ .compatible = "mediatek,mt6991-dsi", .data = &mt6991_dsi_driver_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, mtk_dsi_of_match);

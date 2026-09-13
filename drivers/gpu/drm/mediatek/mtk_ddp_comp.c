@@ -44,7 +44,52 @@
 #define DSC_EN					BIT(0)
 #define DSC_DUAL_INOUT				BIT(2)
 #define DSC_BYPASS				BIT(4)
+#define DSC_SW_RESET				BIT(8)
 #define DSC_UFOE_SEL				BIT(16)
+
+#define DISP_REG_DSC_SPR			0x0014
+#define DISP_REG_DSC_PIC_W			0x0018
+#define DISP_REG_DSC_PIC_H			0x001C
+#define DISP_REG_DSC_SLICE_W			0x0020
+#define DISP_REG_DSC_SLICE_H			0x0024
+#define DISP_REG_DSC_CHUNK_SIZE			0x0028
+#define DISP_REG_DSC_BUF_SIZE			0x002C
+#define DISP_REG_DSC_MODE			0x0030
+#define DSC_SLICE_MODE				BIT(0)
+#define DISP_REG_DSC_CFG			0x0034
+#define DISP_REG_DSC_PAD			0x0038
+#define DISP_REG_DSC_ENC_WIDTH			0x003C
+#define DISP_REG_DSC_OBUF			0x0070
+/*
+ * DSC version register: bit 6 selects VESA DSC 1.2 (bit 5 = 1.1).  The
+ * vendor driver writes 0x40 here for this panel; without it the DSC
+ * encodes with the wrong version and the panel shows stripes.
+ */
+#define DISP_REG_DSC_VERSION			0x0200
+#define DSC_VERSION_1_2				BIT(6)
+#define DISP_REG_DSC_PPS0			0x0080
+#define DISP_REG_DSC_PPS1			0x0084
+#define DISP_REG_DSC_PPS2			0x0088
+#define DISP_REG_DSC_PPS3			0x008C
+#define DISP_REG_DSC_PPS4			0x0090
+#define DISP_REG_DSC_PPS5			0x0094
+#define DISP_REG_DSC_PPS6			0x0098
+#define DISP_REG_DSC_PPS7			0x009C
+#define DISP_REG_DSC_PPS8			0x00A0
+#define DISP_REG_DSC_PPS9			0x00A4
+#define DISP_REG_DSC_PPS10			0x00A8
+#define DISP_REG_DSC_PPS11			0x00AC
+#define DISP_REG_DSC_PPS12			0x00B0
+#define DISP_REG_DSC_PPS13			0x00B4
+#define DISP_REG_DSC_PPS14			0x00B8
+#define DISP_REG_DSC_PPS15			0x00BC
+#define DISP_REG_DSC_PPS16			0x00C0
+#define DISP_REG_DSC_PPS17			0x00C4
+#define DISP_REG_DSC_PPS18			0x00C8
+#define DISP_REG_DSC_PPS19			0x00CC
+#define DISP_REG_SHADOW_CTRL			0x0228
+#define DSC_FORCE_COMMIT				BIT(0)
+#define DSC_BYPASS_SHADOW				BIT(1)
 
 #define DISP_REG_OD_EN				0x0000
 #define DISP_REG_OD_CFG				0x0020
@@ -192,14 +237,158 @@ static void mtk_dsc_config(struct device *dev, unsigned int w,
 			   unsigned int bpc, struct cmdq_pkt *cmdq_pkt)
 {
 	struct mtk_ddp_comp_dev *priv = dev_get_drvdata(dev);
+	u32 dsc_con, val;
+	u32 slice_mode = 1;
+	u32 slice_w = 640;
+	u32 slice_h = 40;
+	u32 pic_h = h;
+	u32 chunk_size = 640;
+	u32 bit_per_channel = 10;
+	u32 bit_per_pixel = 128;
+	u32 pic_group_width;
+	u32 slice_group_width;
+	u32 pic_height_ext_num;
+	u32 enc_slice_width;
+	u32 enc_pic_width;
+	u32 pad_num;
+	u32 init_delay_height = 0;
 
-	/* dsc bypass mode */
-	mtk_ddp_write_mask(cmdq_pkt, DSC_BYPASS, &priv->cmdq_reg, priv->regs,
-			   DISP_REG_DSC_CON, DSC_BYPASS);
-	mtk_ddp_write_mask(cmdq_pkt, DSC_UFOE_SEL, &priv->cmdq_reg, priv->regs,
-			   DISP_REG_DSC_CON, DSC_UFOE_SEL);
-	mtk_ddp_write_mask(cmdq_pkt, DSC_DUAL_INOUT, &priv->cmdq_reg, priv->regs,
-			   DISP_REG_DSC_CON, DSC_DUAL_INOUT);
+	pic_group_width = (slice_w * (slice_mode + 1) + 2) / 3;
+	slice_group_width = (slice_w + 2) / 3;
+	pic_height_ext_num = (pic_h + slice_h - 1) / slice_h;
+	/*
+	 * enc_slice_width is the width of ONE slice (640); the encoder
+	 * picture width is the sum over slices (1280).  The mainline code
+	 * had this backwards, which made the DSC encode a 1280-wide "slice"
+	 * and the panel show stripes.
+	 */
+	enc_slice_width = slice_w;
+	enc_pic_width = enc_slice_width * (slice_mode + 1);
+
+	dsc_con = 0x0080;
+	dsc_con |= DSC_UFOE_SEL;
+	mtk_ddp_write(cmdq_pkt, dsc_con, &priv->cmdq_reg, priv->regs,
+		       DISP_REG_DSC_CON);
+
+	/*
+	 * MT6991 vendor sequence: SPR off and the output-buffer software
+	 * setting for picture widths below 1440.  Without the OBUF value the
+	 * DSC emits a corrupted (striped) stream.
+	 */
+	mtk_ddp_write(cmdq_pkt, 0x0, &priv->cmdq_reg, priv->regs,
+		       DISP_REG_DSC_SPR);
+	if (enc_pic_width < 1440)
+		mtk_ddp_write(cmdq_pkt, 0x800002d9, &priv->cmdq_reg, priv->regs,
+			       DISP_REG_DSC_OBUF);
+
+	mtk_ddp_write(cmdq_pkt, (enc_pic_width << 16) | enc_slice_width,
+		       &priv->cmdq_reg, priv->regs, DISP_REG_DSC_ENC_WIDTH);
+
+	mtk_ddp_write(cmdq_pkt, (pic_group_width - 1) << 16 |
+		       (slice_w * (slice_mode + 1)),
+		       &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PIC_W);
+
+	mtk_ddp_write(cmdq_pkt, (pic_height_ext_num * slice_h - 1) << 16 |
+		       (pic_h - 1),
+		       &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PIC_H);
+
+	mtk_ddp_write(cmdq_pkt, (slice_group_width - 1) << 16 | slice_w,
+		       &priv->cmdq_reg, priv->regs, DISP_REG_DSC_SLICE_W);
+
+	mtk_ddp_write(cmdq_pkt, (enc_slice_width % 3) << 30 |
+		       (pic_height_ext_num - 1) << 16 | (slice_h - 1),
+		       &priv->cmdq_reg, priv->regs, DISP_REG_DSC_SLICE_H);
+
+	mtk_ddp_write(cmdq_pkt,
+		       ((((chunk_size * (1 + slice_mode) + 2) / 3) & 0xFFFF) << 16) + chunk_size,
+		       &priv->cmdq_reg, priv->regs, DISP_REG_DSC_CHUNK_SIZE);
+
+	pad_num = (chunk_size * (slice_mode + 1) + 2) / 3 * 3 -
+		  chunk_size * (slice_mode + 1);
+	mtk_ddp_write(cmdq_pkt, pad_num, &priv->cmdq_reg, priv->regs,
+		       DISP_REG_DSC_PAD);
+
+	mtk_ddp_write(cmdq_pkt, chunk_size * slice_h, &priv->cmdq_reg,
+		       priv->regs, DISP_REG_DSC_BUF_SIZE);
+
+	/*
+	 * MODE: slice mode | rgb swap | init delay height | PPS load mode.
+	 * The bootloader's working config has bit 16 set (0x10001), so keep
+	 * it: this panel does use the register-PPS load mode.
+	 */
+	mtk_ddp_write(cmdq_pkt,
+		       (!!slice_mode) | (init_delay_height << 8) | (1 << 16),
+		       &priv->cmdq_reg, priv->regs, DISP_REG_DSC_MODE);
+
+	/*
+	 * CFG: the panel's dsc_cfg parameter (0x28 for this 10bpc panel,
+	 * dsc_param_load_mode = 0).  Do NOT use 0xD028: that is the
+	 * load-mode-1 10bpc value and, mixed with the load-mode-0 PPS
+	 * table below, makes the DSC emit stripes.
+	 */
+	mtk_ddp_write(cmdq_pkt, 0x28, &priv->cmdq_reg, priv->regs,
+		       DISP_REG_DSC_CFG);
+
+	/* VESA DSC 1.2, matching the panel's PPS (vendor ver&0xf == 2) */
+	mtk_ddp_write_mask(cmdq_pkt, DSC_VERSION_1_2, &priv->cmdq_reg,
+			   priv->regs, DISP_REG_DSC_VERSION,
+			   BIT(5) | BIT(6));
+
+	/* PPS0: line_buf_depth | bpc | bpp | rct_on | bp_enable */
+	val = 11 | (bit_per_channel << 4) | (bit_per_pixel << 8) | (1 << 18) | (1 << 19);
+	mtk_ddp_write(cmdq_pkt, val, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS0);
+
+	/* PPS1: xmit_delay | dec_delay */
+	mtk_ddp_write(cmdq_pkt, 512 | (604 << 16), &priv->cmdq_reg, priv->regs,
+		       DISP_REG_DSC_PPS1);
+
+	/* PPS2: scale_value | increment_interval */
+	mtk_ddp_write(cmdq_pkt, 32 | (1030 << 16), &priv->cmdq_reg, priv->regs,
+		       DISP_REG_DSC_PPS2);
+
+	/* PPS3: decrement_interval | line_bpg_offset */
+	mtk_ddp_write(cmdq_pkt, 8 | (13 << 16), &priv->cmdq_reg, priv->regs,
+		       DISP_REG_DSC_PPS3);
+
+	/* PPS4: nfl_bpg_offset | slice_bpg_offset */
+	mtk_ddp_write(cmdq_pkt, 683 | (544 << 16), &priv->cmdq_reg, priv->regs,
+		       DISP_REG_DSC_PPS4);
+
+	/* PPS5: initial_offset | final_offset */
+	mtk_ddp_write(cmdq_pkt, 6144 | (4320 << 16), &priv->cmdq_reg, priv->regs,
+		       DISP_REG_DSC_PPS5);
+
+	/* PPS6: flatness_minqp | flatness_maxqp | rc_model_size */
+	mtk_ddp_write(cmdq_pkt, 7 | (16 << 8) | (8192 << 16), &priv->cmdq_reg,
+		       priv->regs, DISP_REG_DSC_PPS6);
+
+	/* PPS7: rc_edge_factor | rc_quant_incr_limit0 | rc_quant_incr_limit1 | rc_tgt_offset */
+	mtk_ddp_write(cmdq_pkt, 6 | (15 << 8) | (15 << 16) | (3 << 24) | (3 << 28),
+		       &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS7);
+
+	/* PPS8-PPS11: RC buffer thresholds (10bpc 8bpp) */
+	mtk_ddp_write(cmdq_pkt, 0x382a1c0e, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS8);
+	mtk_ddp_write(cmdq_pkt, 0x69625446, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS9);
+	mtk_ddp_write(cmdq_pkt, 0x7b797770, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS10);
+	mtk_ddp_write(cmdq_pkt, 0x00007e7d, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS11);
+
+	/* PPS12-PPS19: Range table */
+	mtk_ddp_write(cmdq_pkt, 0x01040900, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS12);
+	mtk_ddp_write(cmdq_pkt, 0xF9450125, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS13);
+	mtk_ddp_write(cmdq_pkt, 0xE967F167, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS14);
+	mtk_ddp_write(cmdq_pkt, 0xE187E167, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS15);
+	mtk_ddp_write(cmdq_pkt, 0xD9C7E1A7, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS16);
+	mtk_ddp_write(cmdq_pkt, 0xD1E9D9C9, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS17);
+	mtk_ddp_write(cmdq_pkt, 0xD20DD1E9, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS18);
+	mtk_ddp_write(cmdq_pkt, 0x0000D230, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_PPS19);
+
+	/*
+	 * Release shadow.  The bootloader's working config has both bits set
+	 * (FORCE_COMMIT | BYPASS_SHADOW), so writes apply straight to the
+	 * working bank.
+	 */
+	mtk_ddp_write(cmdq_pkt, DSC_FORCE_COMMIT | DSC_BYPASS_SHADOW,
+		       &priv->cmdq_reg, priv->regs, DISP_REG_SHADOW_CTRL);
 }
 
 static void mtk_dsc_start(struct device *dev)
@@ -584,9 +773,9 @@ int mtk_find_possible_crtcs(struct drm_device *drm, struct device *dev)
 
 		if (mtk_ddp_path_available(data->main_path, data->main_len,
 					   priv_n->comp_node)) {
-			if (mtk_ddp_comp_find(dev, data->main_path,
-					      data->main_len,
-					      priv_n->ddp_comp))
+			bool found = mtk_ddp_comp_find(dev, data->main_path,
+							data->main_len, priv_n->ddp_comp);
+			if (found)
 				return BIT(i);
 			i++;
 		}

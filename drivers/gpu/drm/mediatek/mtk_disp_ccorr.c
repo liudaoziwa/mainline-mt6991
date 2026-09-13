@@ -182,6 +182,8 @@ static const struct of_device_id mtk_disp_ccorr_driver_dt_match[] = {
 	  .data = &mt8183_ccorr_driver_data},
 	{ .compatible = "mediatek,mt8192-disp-ccorr",
 	  .data = &mt8192_ccorr_driver_data},
+	{ .compatible = "mediatek,mt6991-disp-ccorr",
+	  .data = &mt8192_ccorr_driver_data},
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_disp_ccorr_driver_dt_match);

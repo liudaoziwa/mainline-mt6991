@@ -11,6 +11,7 @@
 #include <linux/component.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
@@ -51,6 +52,48 @@
 #define DISP_REG_OVL_ADDR(ovl, n)		((ovl)->data->addr + 0x20 * (n))
 #define DISP_REG_OVL_HDR_ADDR(ovl, n)		((ovl)->data->addr + 0x20 * (n) + 0x04)
 #define DISP_REG_OVL_HDR_PITCH(ovl, n)		((ovl)->data->addr + 0x20 * (n) + 0x08)
+
+/*
+ * MT6991 EXDMA (new-generation OVL) register layout.
+ * The MT6991 display subsystem replaced the classic multi-layer OVL with
+ * single-layer EXDMA scanout blocks feeding a blender chain (BLENDER0-9)
+ * and OUTPROC.  Only the EXDMA layer registers are handled here.
+ */
+#define DISP_REG_OVL_EXDMA_EN			0x0020
+#define DISP_REG_OVL_EXDMA_EN_CON		0x000c
+#define DISP_REG_OVL_EXDMA_TRIG			0x0010
+#define DISP_REG_OVL_EXDMA_DATAPATH_CON		0x0014
+#define DISP_REG_OVL_EXDMA_ROI_BGCLR		0x0018
+#define DISP_REG_OVL_EXDMA_RST			0x0024
+#define DISP_REG_OVL_EXDMA_SHADOW_CTRL		0x0028
+#define OVL_EXDMA_BYPASS_SHADOW			BIT(2)
+#define DISP_REG_OVL_EXDMA_SRC_CON		0x002c
+#define DISP_REG_OVL_EXDMA_ROI_SIZE		0x0030
+#define DISP_REG_OVL_EXDMA_L_EN			0x0040
+#define DISP_REG_OVL_EXDMA_OFFSET		0x0044
+#define DISP_REG_OVL_EXDMA_SRC_SIZE		0x0048
+#define DISP_REG_OVL_EXDMA_CLRFMT		0x0050
+#define DISP_REG_OVL_EXDMA_RDMA_CTRL		0x0100
+#define DISP_REG_OVL_EXDMA_RDMA_BURST_CON1	0x01f4
+#define DISP_REG_OVL_EXDMA_GDRDY_PRD		0x0208
+#define DISP_REG_OVL_EXDMA_PITCH_MSB		0x02f0
+#define DISP_REG_OVL_EXDMA_PITCH		0x02f4
+#define DISP_REG_OVL_EXDMA_CON			0x0300
+#define DISP_REG_OVL_EXDMA_MOUT			0x0ff0
+
+#define OVL_EXDMA_EN				BIT(0)
+#define OVL_EXDMA_OP_8_BIT_MODE			BIT(4)
+#define OVL_EXDMA_L_EN				BIT(0)
+#define OVL_EXDMA_DATAPATH_LAYER_SMI_ID_EN	BIT(0)
+#define OVL_EXDMA_DATAPATH_GCLAST_EN		BIT(24)
+#define OVL_EXDMA_DATAPATH_HDR_GCLAST_EN	BIT(25)
+#define OVL_EXDMA_CON_AEN			BIT(8)
+#define OVL_EXDMA_CON_ALPHA			0xff
+#define OVL_EXDMA_CLRFMT_RGB			0x1
+#define OVL_EXDMA_CLRFMT_RGBA8888		0x2
+#define OVL_EXDMA_CLRFMT_ARGB8888		0x3
+#define OVL_EXDMA_BYTE_SWAP			BIT(16)
+#define OVL_EXDMA_MOUT_OUT_DATA_AND_BGCLR	0x2
 
 #define GMC_THRESHOLD_BITS	16
 #define GMC_THRESHOLD_HIGH	((1 << GMC_THRESHOLD_BITS) / 4)
@@ -150,6 +193,7 @@ struct mtk_disp_ovl_data {
 	const u32 *formats;
 	size_t num_formats;
 	bool supports_clrfmt_ext;
+	bool is_exdma;
 };
 
 /*
@@ -170,6 +214,7 @@ struct mtk_disp_ovl {
 static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 {
 	struct mtk_disp_ovl *priv = dev_id;
+	u32 intsta = readl(priv->regs + DISP_REG_OVL_INTSTA);
 
 	/* Clear frame completion interrupt */
 	writel(0x0, priv->regs + DISP_REG_OVL_INTSTA);
@@ -177,7 +222,8 @@ static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 	if (!priv->vblank_cb)
 		return IRQ_NONE;
 
-	priv->vblank_cb(priv->vblank_cb_data);
+	if (intsta & OVL_FME_CPL_INT)
+		priv->vblank_cb(priv->vblank_cb_data);
 
 	return IRQ_HANDLED;
 }
@@ -261,6 +307,12 @@ void mtk_ovl_start(struct device *dev)
 {
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
 
+	if (ovl->data->is_exdma) {
+		mtk_ddp_write(NULL, OVL_EXDMA_EN, &ovl->cmdq_reg, ovl->regs,
+			      DISP_REG_OVL_EXDMA_EN);
+		return;
+	}
+
 	if (ovl->data->smi_id_en) {
 		unsigned int reg;
 
@@ -274,6 +326,16 @@ void mtk_ovl_start(struct device *dev)
 void mtk_ovl_stop(struct device *dev)
 {
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
+
+	if (ovl->data->is_exdma) {
+		mtk_ddp_write(NULL, 0x0, &ovl->cmdq_reg, ovl->regs,
+			      DISP_REG_OVL_EXDMA_L_EN);
+		mtk_ddp_write(NULL, 0x0, &ovl->cmdq_reg, ovl->regs,
+			      DISP_REG_OVL_EXDMA_RDMA_CTRL);
+		mtk_ddp_write(NULL, 0x0, &ovl->cmdq_reg, ovl->regs,
+			      DISP_REG_OVL_EXDMA_EN);
+		return;
+	}
 
 	writel_relaxed(0x0, ovl->regs + DISP_REG_OVL_EN);
 	if (ovl->data->smi_id_en) {
@@ -315,6 +377,44 @@ void mtk_ovl_config(struct device *dev, unsigned int w,
 		    unsigned int bpc, struct cmdq_pkt *cmdq_pkt)
 {
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
+
+	if (ovl->data->is_exdma) {
+		/*
+		 * Do not reset the EXDMA: the bootloader brought it up
+		 * together with the blender chain and a reset clears internal
+		 * state that is not exposed in this register map.  Bypass the
+		 * shadow bank (vendor need_bypass_shadow = true) and make sure
+		 * the data path registers hold their expected values.
+		 */
+		mtk_ddp_write_mask(cmdq_pkt, OVL_EXDMA_BYPASS_SHADOW,
+				   &ovl->cmdq_reg, ovl->regs,
+				   DISP_REG_OVL_EXDMA_SHADOW_CTRL,
+				   OVL_EXDMA_BYPASS_SHADOW);
+		mtk_ddp_write_mask(cmdq_pkt, 0x0, &ovl->cmdq_reg, ovl->regs,
+				   DISP_REG_OVL_EXDMA_EN_CON, OVL_EXDMA_OP_8_BIT_MODE);
+		mtk_ddp_write_mask(cmdq_pkt, 0x10, &ovl->cmdq_reg, ovl->regs,
+				   DISP_REG_OVL_EXDMA_SRC_CON, 0x10);
+		mtk_ddp_write(cmdq_pkt,
+			      OVL_EXDMA_DATAPATH_LAYER_SMI_ID_EN |
+			      OVL_EXDMA_DATAPATH_GCLAST_EN |
+			      OVL_EXDMA_DATAPATH_HDR_GCLAST_EN,
+			      &ovl->cmdq_reg, ovl->regs,
+			      DISP_REG_OVL_EXDMA_DATAPATH_CON);
+		mtk_ddp_write(cmdq_pkt, OVL_EXDMA_MOUT_OUT_DATA_AND_BGCLR,
+			      &ovl->cmdq_reg, ovl->regs,
+			      DISP_REG_OVL_EXDMA_MOUT);
+		mtk_ddp_write(cmdq_pkt, OVL_EXDMA_EN, &ovl->cmdq_reg, ovl->regs,
+			      DISP_REG_OVL_EXDMA_EN);
+
+		if (w != 0 && h != 0)
+			mtk_ddp_write_relaxed(cmdq_pkt, h << 16 | w,
+					      &ovl->cmdq_reg, ovl->regs,
+					      DISP_REG_OVL_EXDMA_ROI_SIZE);
+
+		mtk_ddp_write_relaxed(cmdq_pkt, OVL_COLOR_ALPHA, &ovl->cmdq_reg,
+				      ovl->regs, DISP_REG_OVL_EXDMA_ROI_BGCLR);
+		return;
+	}
 
 	if (w != 0 && h != 0)
 		mtk_ddp_write_relaxed(cmdq_pkt, h << 16 | w, &ovl->cmdq_reg, ovl->regs,
@@ -373,6 +473,14 @@ void mtk_ovl_layer_on(struct device *dev, unsigned int idx,
 	unsigned int gmc_value;
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
 
+	if (ovl->data->is_exdma) {
+		mtk_ddp_write(cmdq_pkt, 0x1, &ovl->cmdq_reg, ovl->regs,
+			      DISP_REG_OVL_EXDMA_RDMA_CTRL);
+		mtk_ddp_write(cmdq_pkt, OVL_EXDMA_L_EN, &ovl->cmdq_reg,
+			      ovl->regs, DISP_REG_OVL_EXDMA_L_EN);
+		return;
+	}
+
 	mtk_ddp_write(cmdq_pkt, 0x1, &ovl->cmdq_reg, ovl->regs,
 		      DISP_REG_OVL_RDMA_CTRL(idx));
 	gmc_thrshd_l = GMC_THRESHOLD_LOW >>
@@ -394,6 +502,11 @@ void mtk_ovl_layer_off(struct device *dev, unsigned int idx,
 		       struct cmdq_pkt *cmdq_pkt)
 {
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
+
+	if (ovl->data->is_exdma) {
+		/* BISECT: leave the bootloader's layer on/off state untouched */
+		return;
+	}
 
 	mtk_ddp_write_mask(cmdq_pkt, 0, &ovl->cmdq_reg, ovl->regs,
 			   DISP_REG_OVL_SRC_CON, BIT(idx));
@@ -490,6 +603,44 @@ static void mtk_ovl_afbc_layer_config(struct mtk_disp_ovl *ovl,
 	}
 }
 
+/*
+ * MT6991 EXDMA color format encoding (register DISP_REG_OVL_EXDMA_CLRFMT).
+ * Mirrors the vendor mediatek_v2 ovl_fmt_convert() table: the register value
+ * is relative to the memory layout, hence XRGB8888 maps to "RGBA8888".
+ */
+static unsigned int mtk_ovl_exdma_fmt_convert(unsigned int fmt)
+{
+	switch (fmt) {
+	default:
+	case DRM_FORMAT_RGB565:
+		return 0;
+	case DRM_FORMAT_BGR565:
+		return OVL_EXDMA_BYTE_SWAP;
+	case DRM_FORMAT_RGB888:
+		return OVL_EXDMA_CLRFMT_RGB;
+	case DRM_FORMAT_BGR888:
+		return OVL_EXDMA_CLRFMT_RGB | OVL_EXDMA_BYTE_SWAP;
+	case DRM_FORMAT_RGBX8888:
+	case DRM_FORMAT_RGBA8888:
+	case DRM_FORMAT_RGBA1010102:
+		return OVL_EXDMA_CLRFMT_ARGB8888;
+	case DRM_FORMAT_BGRX8888:
+	case DRM_FORMAT_BGRA8888:
+	case DRM_FORMAT_BGRA1010102:
+		return OVL_EXDMA_CLRFMT_ARGB8888 | OVL_EXDMA_BYTE_SWAP;
+	case DRM_FORMAT_XRGB8888:
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_XRGB2101010:
+	case DRM_FORMAT_ARGB2101010:
+		return OVL_EXDMA_CLRFMT_RGBA8888;
+	case DRM_FORMAT_XBGR8888:
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_XBGR2101010:
+	case DRM_FORMAT_ABGR2101010:
+		return OVL_EXDMA_CLRFMT_RGBA8888 | OVL_EXDMA_BYTE_SWAP;
+	}
+}
+
 void mtk_ovl_layer_config(struct device *dev, unsigned int idx,
 			  struct mtk_plane_state *state,
 			  struct cmdq_pkt *cmdq_pkt)
@@ -505,6 +656,34 @@ void mtk_ovl_layer_config(struct device *dev, unsigned int idx,
 	unsigned int blend_mode = state->base.pixel_blend_mode;
 	unsigned int ignore_pixel_alpha = 0;
 	unsigned int con;
+
+	if (ovl->data->is_exdma) {
+		if (!pending->enable) {
+			mtk_ovl_layer_off(dev, idx, cmdq_pkt);
+			return;
+		}
+
+		mtk_ddp_write_relaxed(cmdq_pkt,
+				      mtk_ovl_exdma_fmt_convert(fmt),
+				      &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_EXDMA_CLRFMT);
+		mtk_ddp_write_relaxed(cmdq_pkt,
+				      OVL_EXDMA_CON_AEN |
+				      ((state->base.alpha >> 8) & OVL_EXDMA_CON_ALPHA),
+				      &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_EXDMA_CON);
+		mtk_ddp_write_relaxed(cmdq_pkt, offset, &ovl->cmdq_reg,
+				      ovl->regs, DISP_REG_OVL_EXDMA_OFFSET);
+		mtk_ddp_write_relaxed(cmdq_pkt, src_size, &ovl->cmdq_reg,
+				      ovl->regs, DISP_REG_OVL_EXDMA_SRC_SIZE);
+		mtk_ddp_write_relaxed(cmdq_pkt, pending->pitch, &ovl->cmdq_reg,
+				      ovl->regs, DISP_REG_OVL_EXDMA_PITCH);
+		mtk_ddp_write_relaxed(cmdq_pkt, addr, &ovl->cmdq_reg, ovl->regs,
+				      DISP_REG_OVL_ADDR(ovl, idx));
+
+		mtk_ovl_layer_on(dev, idx, cmdq_pkt);
+		return;
+	}
 
 	if (!pending->enable) {
 		mtk_ovl_layer_off(dev, idx, cmdq_pkt);
@@ -614,13 +793,14 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
+
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
-	irq = platform_get_irq(pdev, 0);
+	irq = platform_get_irq_optional(pdev, 0);
 	if (irq < 0)
-		return irq;
+		irq = 0;
 
 	priv->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(priv->clk))
@@ -640,10 +820,22 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	priv->data = of_device_get_match_data(dev);
 	platform_set_drvdata(pdev, priv);
 
-	ret = devm_request_irq(dev, irq, mtk_disp_ovl_irq_handler,
-			       IRQF_TRIGGER_NONE, dev_name(dev), priv);
-	if (ret < 0)
-		return dev_err_probe(dev, ret, "Failed to request irq %d\n", irq);
+	/*
+	 * The DRM framebuffer is allocated against this device (see
+	 * drm_dev_set_dma_dev() in mtk_drm_drv.c).  If the node carries a
+	 * memory-region, hand its DMA pool to the DMA layer so the buffer
+	 * lands in memory the display SMMU can actually translate.
+	 */
+	ret = of_reserved_mem_device_init(dev);
+	if (ret && ret != -ENODEV)
+		pr_err("[OVL] of_reserved_mem_device_init: %d\n", ret);
+
+	if (irq > 0) {
+		ret = devm_request_irq(dev, irq, mtk_disp_ovl_irq_handler,
+				       IRQF_TRIGGER_NONE, dev_name(dev), priv);
+		if (ret < 0)
+			return dev_err_probe(dev, ret, "Failed to request irq %d\n", irq);
+	}
 
 	pm_runtime_enable(dev);
 
@@ -749,6 +941,22 @@ static const struct mtk_disp_ovl_data mt8195_ovl_driver_data = {
 	.supports_clrfmt_ext = true,
 };
 
+/* MT6991 OVL_EXDMA: single-layer scanout block of the EXDMA+BLENDER family */
+static const struct mtk_disp_ovl_data mt6991_ovl_exdma_driver_data = {
+	.addr = DISP_REG_OVL_ADDR_MT8173,
+	.gmc_bits = 10,
+	.layer_nr = 1,
+	.fmt_rgb565_is_0 = true,
+	.smi_id_en = true,
+	.supports_afbc = false,
+	.is_exdma = true,
+	.blend_modes = BIT(DRM_MODE_BLEND_PREMULTI) |
+		       BIT(DRM_MODE_BLEND_COVERAGE) |
+		       BIT(DRM_MODE_BLEND_PIXEL_NONE),
+	.formats = mt8195_formats,
+	.num_formats = ARRAY_SIZE(mt8195_formats),
+};
+
 static const struct of_device_id mtk_disp_ovl_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt2701-disp-ovl",
 	  .data = &mt2701_ovl_driver_data},
@@ -766,6 +974,8 @@ static const struct of_device_id mtk_disp_ovl_driver_dt_match[] = {
 	  .data = &mt8192_ovl_2l_driver_data},
 	{ .compatible = "mediatek,mt8195-disp-ovl",
 	  .data = &mt8195_ovl_driver_data},
+	{ .compatible = "mediatek,mt6991-disp-ovl-exdma",
+	  .data = &mt6991_ovl_exdma_driver_data},
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_disp_ovl_driver_dt_match);

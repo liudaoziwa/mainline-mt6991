@@ -150,6 +150,29 @@ static const struct mtk_mmsys_driver_data mt8365_mmsys_driver_data = {
 	.num_routes = ARRAY_SIZE(mt8365_mmsys_routing_table),
 };
 
+/* MT6991 display subsystem is register-compatible with MT8196.  Reuse the
+   mt8196 clock drivers (platform_device_id matching by name). */
+static const struct mtk_mmsys_driver_data mt6991_mmsys0_data = {
+	.clk_driver = "clk-mt8196-disp0",
+};
+
+static const struct mtk_mmsys_driver_data mt6991_mmsys1_data = {
+	.clk_driver = "clk-mt8196-disp1",
+};
+
+static const struct mtk_mmsys_driver_data mt6991_ovlsys_data = {
+	.clk_driver = "clk-mt8196-ovl0",
+};
+
+static const struct mtk_mmsys_driver_data mt6991_ovlsys1_data = {
+	.clk_driver = "clk-mt8196-ovl1",
+};
+
+static const struct mtk_mmsys_driver_data mt6991_vdisp_ao_data = {
+	.clk_driver = "clk-mt8196-vdisp-ao",
+	.is_vppsys = true,
+};
+
 struct mtk_mmsys {
 	void __iomem *regs;
 	const struct mtk_mmsys_driver_data *data;
@@ -394,6 +417,8 @@ static int mtk_mmsys_probe(struct platform_device *pdev)
 	struct mtk_mmsys *mmsys;
 	int ret;
 
+	dev_dbg(dev, "probe called for %pOF\n", dev->of_node);
+
 	mmsys = devm_kzalloc(dev, sizeof(*mmsys), GFP_KERNEL);
 	if (!mmsys)
 		return -ENOMEM;
@@ -430,8 +455,11 @@ static int mtk_mmsys_probe(struct platform_device *pdev)
 
 	clks = platform_device_register_data(&pdev->dev, mmsys->data->clk_driver,
 					     PLATFORM_DEVID_AUTO, NULL, 0);
-	if (IS_ERR(clks))
+	if (IS_ERR(clks)) {
+		pr_err("[MMSYS] failed to register clk pdev: %ld\n", PTR_ERR(clks));
 		return PTR_ERR(clks);
+	}
+	dev_dbg(dev, "registered clk pdev '%s'\n", mmsys->data->clk_driver);
 	mmsys->clks_pdev = clks;
 
 	if (mmsys->data->is_vppsys)
@@ -479,6 +507,12 @@ static const struct of_device_id of_match_mtk_mmsys[] = {
 	{ .compatible = "mediatek,mt8195-vppsys0", .data = &mt8195_vppsys0_driver_data },
 	{ .compatible = "mediatek,mt8195-vppsys1", .data = &mt8195_vppsys1_driver_data },
 	{ .compatible = "mediatek,mt8365-mmsys", .data = &mt8365_mmsys_driver_data },
+	/* MT6991 — display hardware identical to MT8196 */
+	{ .compatible = "mediatek,mt6991-mmsys0", .data = &mt6991_mmsys0_data },
+	{ .compatible = "mediatek,mt6991-mmsys1", .data = &mt6991_mmsys1_data },
+	{ .compatible = "mediatek,mt6991-ovlsys_config", .data = &mt6991_ovlsys_data },
+	{ .compatible = "mediatek,mt6991-ovlsys1_config", .data = &mt6991_ovlsys1_data },
+	{ .compatible = "mediatek,mt6991-vdisp-ao", .data = &mt6991_vdisp_ao_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, of_match_mtk_mmsys);

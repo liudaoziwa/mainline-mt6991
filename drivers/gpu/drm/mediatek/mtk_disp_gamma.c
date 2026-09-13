@@ -321,6 +321,8 @@ static const struct of_device_id mtk_disp_gamma_driver_dt_match[] = {
 	  .data = &mt8183_gamma_driver_data},
 	{ .compatible = "mediatek,mt8195-disp-gamma",
 	  .data = &mt8195_gamma_driver_data},
+	{ .compatible = "mediatek,mt6991-disp-gamma",
+	  .data = &mt8195_gamma_driver_data},
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_disp_gamma_driver_dt_match);
