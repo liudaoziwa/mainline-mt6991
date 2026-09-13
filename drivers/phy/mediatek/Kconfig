@@ -91,6 +91,17 @@ config PHY_MTK_MIPI_DSI
 	help
 	  Support MIPI DSI for Mediatek SoCs.
 
+config PHY_MTK_NXP_EUSB2_REPEATER
+	tristate "NXP eUSB2 Repeater (PTN36241) for MediaTek platforms"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF
+	depends on I2C
+	select GENERIC_PHY
+	help
+	  Enable this to support the NXP PTN36241 eUSB2 repeater found on
+	  MediaTek MT6991 platforms.  The repeater sits on I2C between the
+	  USB2 PHY and the USB-C connector, conditioning the eUSB2 signals.
+
 config PHY_MTK_DP
 	tristate "MediaTek DP-PHY Driver"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
