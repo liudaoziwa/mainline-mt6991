@@ -179,10 +179,56 @@ static int mtk_mipi_tx_probe(struct platform_device *pdev)
 	return devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get, &mipi_tx->pll_hw);
 }
 
+/*
+ * MT6991: the MIPI TX control block is not MT8183 compatible (different
+ * lane control offsets, PLL enable bit and calibration registers) and the
+ * bootloader leaves the D-PHY fully configured for the panel.  Leave the
+ * PHY untouched instead of programming it with the MT8183 register layout.
+ */
+static int mtk_mipi_tx_mt6991_pll_enable(struct clk_hw *hw)
+{
+	return 0;
+}
+
+static void mtk_mipi_tx_mt6991_pll_disable(struct clk_hw *hw)
+{
+}
+
+static int mtk_mipi_tx_mt6991_pll_determine_rate(struct clk_hw *hw,
+						 struct clk_rate_request *req)
+{
+	req->rate = clamp_val(req->rate, 125000000, 3200000000UL);
+
+	return 0;
+}
+
+static const struct clk_ops mtk_mipi_tx_mt6991_pll_ops = {
+	.enable = mtk_mipi_tx_mt6991_pll_enable,
+	.disable = mtk_mipi_tx_mt6991_pll_disable,
+	.determine_rate = mtk_mipi_tx_mt6991_pll_determine_rate,
+	.set_rate = mtk_mipi_tx_pll_set_rate,
+	.recalc_rate = mtk_mipi_tx_pll_recalc_rate,
+};
+
+static void mtk_mipi_tx_mt6991_enable_signal(struct phy *phy)
+{
+}
+
+static void mtk_mipi_tx_mt6991_disable_signal(struct phy *phy)
+{
+}
+
+static const struct mtk_mipitx_data mt6991_mipitx_data = {
+	.mipi_tx_clk_ops = &mtk_mipi_tx_mt6991_pll_ops,
+	.mipi_tx_enable_signal = mtk_mipi_tx_mt6991_enable_signal,
+	.mipi_tx_disable_signal = mtk_mipi_tx_mt6991_disable_signal,
+};
+
 static const struct of_device_id mtk_mipi_tx_match[] = {
 	{ .compatible = "mediatek,mt2701-mipi-tx", .data = &mt2701_mipitx_data },
 	{ .compatible = "mediatek,mt8173-mipi-tx", .data = &mt8173_mipitx_data },
 	{ .compatible = "mediatek,mt8183-mipi-tx", .data = &mt8183_mipitx_data },
+	{ .compatible = "mediatek,mt6991-mipi-tx", .data = &mt6991_mipitx_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, mtk_mipi_tx_match);
