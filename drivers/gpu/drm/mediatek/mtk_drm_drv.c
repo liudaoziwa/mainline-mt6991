@@ -688,19 +688,18 @@ static int mtk_drm_bind(struct device *dev)
 		goto err_free;
 
 	/*
-	 * Keep simplefb alive next to DRM during bring-up: the panel console
-	 * and the /dev/fb0 separation tests depend on it.  The framebuffer
-	 * region is reserved in the DT so there is no real conflict.
+	 * Hand the console over from simplefb to the DRM fbdev: remove the
+	 * conflicting aperture devices so our fbdev can register as fb0.
 	 */
-	/* aperture_remove_all_conflicting_devices(DRIVER_NAME); */
+	aperture_remove_all_conflicting_devices(DRIVER_NAME);
 
 	ret = drm_dev_register(drm, 0);
 	if (ret < 0)
 		goto err_deinit;
 
-	/* Skip drm_client_setup — it does an initial modeset that hangs on
-	 * mt6991.  Userspace (init) will trigger modeset via DRM ioctls. */
-	/* drm_client_setup(drm, NULL); */
+	/* Set up the DRM fbdev client so fbcon keeps showing kernel logs
+	 * after the hand-over from simplefb. */
+	drm_client_setup(drm, NULL);
 
 	return 0;
 
