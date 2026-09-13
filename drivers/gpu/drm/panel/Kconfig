@@ -76,6 +76,16 @@ config DRM_PANEL_BOE_TD4320
 	  Say Y here if you want to enable support for BOE TD4320 1080x2340
 	  video mode panel found in Xiaomi Redmi Note 7 smartphones.
 
+config DRM_PANEL_AE031_DSI_VDO
+	tristate "AE031 P_3 A0026 1280x2800 DSI video mode panel"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	help
+	  Say Y here to enable support for the ae031 P_3 A0026 DSI video mode
+	  panel with 1280x2800 resolution and DSC compression. Found in the
+	  realme GT7 (RMX6688) smartphone with MediaTek MT6991 SoC.
+
 config DRM_PANEL_BOE_TH101MB31UIG002_28A
 	tristate "Boe TH101MB31UIG002-28A panel"
 	depends on OF
