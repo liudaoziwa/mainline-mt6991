@@ -66,6 +66,12 @@ static const struct of_device_id of_match_clk_mt8196_vdisp_ao[] = {
 };
 MODULE_DEVICE_TABLE(of, of_match_clk_mt8196_vdisp_ao);
 
+static const struct platform_device_id clk_mt8196_vdisp_ao_id_table[] = {
+	{ .name = "clk-mt8196-vdisp-ao", .driver_data = (kernel_ulong_t)&mm_v_mcd },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(platform, clk_mt8196_vdisp_ao_id_table);
+
 static struct platform_driver clk_mt8196_vdisp_ao_drv = {
 	.probe = mtk_clk_pdev_probe,
 	.remove = mtk_clk_pdev_remove,
@@ -73,6 +79,7 @@ static struct platform_driver clk_mt8196_vdisp_ao_drv = {
 		.name = "clk-mt8196-vdisp-ao",
 		.of_match_table = of_match_clk_mt8196_vdisp_ao,
 	},
+	.id_table = clk_mt8196_vdisp_ao_id_table,
 };
 module_platform_driver(clk_mt8196_vdisp_ao_drv);
 
