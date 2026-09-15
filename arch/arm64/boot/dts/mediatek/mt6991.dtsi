@@ -448,6 +448,7 @@
 
 	pio: pinctrl@1002d000 {
 		compatible = "mediatek,mt6991-pinctrl";
+		interrupts = <GIC_SPI 396 IRQ_TYPE_LEVEL_HIGH 0>;
 		reg = <0x0 0x1002d000 0x0 0x1000>,
 		      <0x0 0x12000000 0x0 0x1000>,
 		      <0x0 0x12020000 0x0 0x1000>,
@@ -463,11 +464,20 @@
 		      <0x0 0x13110000 0x0 0x1000>,
 		      <0x0 0x13800000 0x0 0x1000>,
 		      <0x0 0x13820000 0x0 0x1000>,
-		      <0x0 0x13860000 0x0 0x1000>;
+		      <0x0 0x13860000 0x0 0x1000>,
+		      /* EINT registers (appended after pinctrl bases) */
+		      <0x0 0x12080000 0x0 0x1000>,
+		      <0x0 0x12880000 0x0 0x1000>,
+		      <0x0 0x13080000 0x0 0x1000>,
+		      <0x0 0x13880000 0x0 0x1000>,
+		      <0x0 0x1c54a000 0x0 0x1000>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
 		reg-names = "base", "rt", "rm1", "rm2", "rb",
 			    "bm1", "bm2", "bm3",
 			    "lt", "lm1", "lm2", "lb1", "lb2",
-			    "tm1", "tm2", "tm3";
+			    "tm1", "tm2", "tm3",
+			    "eint-e", "eint-s", "eint-w", "eint-n", "eint-c";
 		#gpio-cells = <2>;
 		gpio-controller;
 	};
@@ -620,6 +630,21 @@
 		compatible = "mediatek,mt6991-disp-dsc";
 		reg = <0x0 0x32450000 0x0 0x1000>;
 		clocks = <&mmsys1 CLK_MM1_DISPSYS1_CONFIG>;
+		status = "disabled";
+	};
+
+	spi6: spi@161d0000 {
+		compatible = "mediatek,mt8196-spi", "mediatek,mt6991-spi";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg = <0x0 0x161d0000 0x0 0x100>,
+		      <0x0 0x16640000 0x0 0x10>;
+		interrupts = <GIC_SPI 309 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&topckgen CLK_TOP_UNIVPLL_D6_D2>,
+			 <&topckgen CLK_TOP_SPI6_BCLK>,
+			 <&pericfg_ao CLK_PERI_AO_SPI6_BCLK>;
+		clock-names = "parent-clk", "sel-clk", "spi-clk";
+		mediatek,pad-select = <1>;
 		status = "disabled";
 	};
 };

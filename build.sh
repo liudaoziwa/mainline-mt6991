@@ -45,6 +45,14 @@ nod /dev/null 0666 0 0 c 1 3
 nod /dev/kmsg 0644 0 0 c 1 11
 dir /proc 0755 0 0
 dir /sys 0755 0 0
+dir /lib 0755 0 0
+dir /lib/firmware 0755 0 0
+dir /lib/firmware/tp 0755 0 0
+dir /lib/firmware/tp/24618 0755 0 0
+file /lib/firmware/tp/24618/FW_S3910_TIANMA_HBP.img $IRFS/firmware/tp/24618/FW_S3910_TIANMA_HBP.img 0644 0 0
+file /lib/firmware/tp/24618/FW_S3910_TIANMA_HBP_FAE.img $IRFS/firmware/tp/24618/FW_S3910_TIANMA_HBP_FAE.img 0644 0 0
+file /lib/firmware/tp/24618/LIMIT_S3910_TIANMA_HBP.img $IRFS/firmware/tp/24618/LIMIT_S3910_TIANMA_HBP.img 0644 0 0
+file /lib/firmware/tp/24618/LIMIT_S3910_TIANMA_HBP_AGING.img $IRFS/firmware/tp/24618/LIMIT_S3910_TIANMA_HBP_AGING.img 0644 0 0
 file /init $IRFS/init 0755 0 0
 EOF
 cat "$IRFS/cpio_list"

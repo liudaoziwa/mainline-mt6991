@@ -13,6 +13,7 @@
 /dts-v1/;
 
 #include "mt6991.dtsi"
+#include <dt-bindings/pinctrl/mt6991-pinfunc.h>
 
 / {
 	model = "realme GT7 (RMX6688)";
@@ -173,6 +174,15 @@
 		regulator-always-on;
 		regulator-boot-on;
 	};
+
+		reg_vtouch: regulator-vtouch {
+		compatible = "regulator-fixed";
+		regulator-name = "vtouch";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
 };
 
 &uart0 {
@@ -308,6 +318,44 @@
 
 &dsc0 {
 	status = "okay";
+};
+
+/* ---- Touchscreen (Synaptics S3910 on SPI6) ---- */
+
+&pio {
+	pinctrl_spi6: spi6-pins {
+		pins1 {
+			pinmux = <PINMUX_GPIO81__FUNC_SPI6_B_CLK>,
+				 <PINMUX_GPIO82__FUNC_SPI6_B_CSB>,
+				 <PINMUX_GPIO83__FUNC_SPI6_B_MO>,
+				 <PINMUX_GPIO84__FUNC_SPI6_B_MI>;
+			drive-strength = <MTK_DRIVE_8mA>;
+		};
+	};
+};
+
+&spi6 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_spi6>;
+
+	touchscreen@0 {
+		compatible = "synaptics,tcm-spi-hbp";
+		reg = <0>;
+		spi-max-frequency = <19000000>;
+
+		interrupt-parent = <&pio>;
+		interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
+
+		reset-gpios = <&pio 3 GPIO_ACTIVE_HIGH>;
+		irq-gpios = <&pio 7 IRQ_TYPE_EDGE_FALLING>;
+
+		avdd-supply = <&reg_vtouch>;
+
+		touchpanel,max-num-support = <10>;
+		touchpanel,panel-coords = <12800 28000>;
+		touchpanel,display-coords = <1280 2800>;
+	};
 };
 
 &disp_mutex0 {

@@ -805,6 +805,16 @@ config TOUCHSCREEN_EDT_FT5X06
 	  To compile this driver as a module, choose M here: the
 	  module will be called edt-ft5x06.
 
+config TOUCHSCREEN_SYNAPTICS_TCM_SPI
+	tristate "Synaptics TCM SPI touchscreen"
+	depends on SPI
+	help
+	  Say Y here if you have a Synaptics S3910 or compatible touchscreen
+	  connected over SPI using the TouchCom (TCM) protocol.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called synaptics-tcm-spi.
+
 config TOUCHSCREEN_RASPBERRYPI_FW
 	tristate "Raspberry Pi's firmware base touch screen support"
 	depends on RASPBERRYPI_FIRMWARE || (RASPBERRYPI_FIRMWARE=n && COMPILE_TEST)

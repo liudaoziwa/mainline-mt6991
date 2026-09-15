@@ -1275,12 +1275,17 @@ static int mtk_spi_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "failed to clk_set_parent\n");
 
+	ret = clk_prepare_enable(mdata->sel_clk);
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "failed to enable sel_clk\n");
+
 	ret = clk_prepare_enable(mdata->spi_hclk);
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "failed to enable hclk\n");
 
 	ret = clk_prepare_enable(mdata->spi_clk);
 	if (ret < 0) {
+		clk_disable_unprepare(mdata->sel_clk);
 		clk_disable_unprepare(mdata->spi_hclk);
 		return dev_err_probe(dev, ret, "failed to enable spi_clk\n");
 	}

@@ -209,3 +209,11 @@ CONFIG_DRM_PANEL_AE031_DSI_VDO=y
 
 # Backlight (built-in so panel can set brightness at boot)
 CONFIG_BACKLIGHT_CLASS_DEVICE=y
+
+# --- Touchscreen (Synaptics S3910 on SPI6) --------------------------------
+# Built-in so the touchscreen works during init for testing.  The SPI
+# controller must also be enabled.
+CONFIG_SPI=y
+CONFIG_SPI_MASTER=y
+CONFIG_SPI_MT65XX=y
+CONFIG_TOUCHSCREEN_SYNAPTICS_TCM_SPI=y
