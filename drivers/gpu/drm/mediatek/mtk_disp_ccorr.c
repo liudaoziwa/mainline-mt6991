@@ -62,7 +62,7 @@ void mtk_ccorr_config(struct device *dev, unsigned int w,
 
 	mtk_ddp_write(cmdq_pkt, w << 16 | h, &ccorr->cmdq_reg, ccorr->regs,
 		      DISP_CCORR_SIZE);
-	mtk_ddp_write(cmdq_pkt, CCORR_ENGINE_EN, &ccorr->cmdq_reg, ccorr->regs,
+	mtk_ddp_write(cmdq_pkt, CCORR_RELAY_MODE, &ccorr->cmdq_reg, ccorr->regs,
 		      DISP_CCORR_CFG);
 }
 

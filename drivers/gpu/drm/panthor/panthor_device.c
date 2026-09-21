@@ -256,38 +256,47 @@ int panthor_device_init(struct panthor_device *ptdev)
 	}
 
 	ret = panthor_hw_init(ptdev);
+	drm_info(&ptdev->base, "probe: hw_init ret=%d\n", ret);
 	if (ret)
 		goto err_rpm_put;
 
 	ret = panthor_pwr_init(ptdev);
+	drm_info(&ptdev->base, "probe: pwr_init ret=%d\n", ret);
 	if (ret)
 		goto err_rpm_put;
 
 	ret = panthor_gpu_init(ptdev);
+	drm_info(&ptdev->base, "probe: gpu_init ret=%d\n", ret);
 	if (ret)
 		goto err_unplug_pwr;
 
 	ret = panthor_gpu_coherency_init(ptdev);
+	drm_info(&ptdev->base, "probe: coherency_init ret=%d\n", ret);
 	if (ret)
 		goto err_unplug_gpu;
 
 	ret = panthor_gem_shrinker_init(ptdev);
+	drm_info(&ptdev->base, "probe: shrinker_init ret=%d\n", ret);
 	if (ret)
 		goto err_unplug_gpu;
 
 	ret = panthor_mmu_init(ptdev);
+	drm_info(&ptdev->base, "probe: mmu_init ret=%d\n", ret);
 	if (ret)
 		goto err_unplug_shrinker;
 
 	ret = panthor_fw_init(ptdev);
+	drm_info(&ptdev->base, "probe: fw_init ret=%d\n", ret);
 	if (ret)
 		goto err_unplug_mmu;
 
 	ret = panthor_sched_init(ptdev);
+	drm_info(&ptdev->base, "probe: sched_init ret=%d\n", ret);
 	if (ret)
 		goto err_unplug_fw;
 
 	panthor_gem_init(ptdev);
+	drm_info(&ptdev->base, "probe: gem_init ok\n");
 
 	/* Now that everything is initialized, we can enable the reset work. */
 	enable_work(&ptdev->reset.work);
@@ -297,6 +306,7 @@ int panthor_device_init(struct panthor_device *ptdev)
 	pm_runtime_use_autosuspend(ptdev->base.dev);
 
 	ret = drm_dev_register(&ptdev->base, 0);
+	drm_info(&ptdev->base, "probe: drm_dev_register ret=%d\n", ret);
 	if (ret)
 		goto err_disable_autosuspend;
 

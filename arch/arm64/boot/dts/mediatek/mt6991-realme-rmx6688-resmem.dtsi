@@ -18,7 +18,7 @@
 		no-map;
 	};
 
-	mblock-53-me_GPUEB_SHARED@f7280000 {
+	gpueb_shared: mblock-53-me_GPUEB_SHARED@f7280000 {
 		compatible = "mediatek,me_GPUEB_SHARED";
 		reg = <0x0 0xf7280000 0x0 0x00180000>;
 		no-map;

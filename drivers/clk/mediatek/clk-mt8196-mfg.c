@@ -86,6 +86,12 @@ static const struct of_device_id of_match_clk_mt8196_mfg[] = {
 	  .data = &mfgsc0_ao_plls },
 	{ .compatible = "mediatek,mt8196-mfgpll-sc1-pll-ctrl",
 	  .data = &mfgsc1_ao_plls },
+	{ .compatible = "mediatek,mt6991-mfgpll_pll_ctrl",
+	  .data = &mfg_ao_plls },
+	{ .compatible = "mediatek,mt6991-mfgpll_sc0_pll_ctrl",
+	  .data = &mfgsc0_ao_plls },
+	{ .compatible = "mediatek,mt6991-mfgpll_sc1_pll_ctrl",
+	  .data = &mfgsc1_ao_plls },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, of_match_clk_mt8196_mfg);

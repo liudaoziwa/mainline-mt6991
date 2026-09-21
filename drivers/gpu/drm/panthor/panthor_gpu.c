@@ -465,9 +465,18 @@ int panthor_gpu_coherency_init(struct panthor_device *ptdev)
 	/* Start with no coherency, and update it if the device is flagged coherent. */
 	ptdev->gpu_info.selected_coherency = GPU_COHERENCY_NONE;
 	ptdev->coherent = device_get_dma_attr(ptdev->base.dev) == DEV_DMA_COHERENT;
+	dev_info(ptdev->base.dev, "panthor coherency: dma_attr=%d coherent=%d (forcing non-coherent per vendor system-coherency=0)\n",
+		 device_get_dma_attr(ptdev->base.dev), ptdev->coherent);
+	/*
+	 * MT6991 vendor DT sets system-coherency = <0>: the GPU is NOT
+	 * hardware-coherent with the display.  Force the non-coherent path so
+	 * panthor uses uncached mappings + explicit cache maintenance for
+	 * buffers shared with the (non-IOMMU) display, otherwise the OVL reads
+	 * stale GPU writes and the screen shows scrambled colors.
+	 */
+	ptdev->coherent = false;
 
-	if (!ptdev->coherent)
-		return 0;
+	return 0;
 
 	/* Check if the ACE-Lite coherency protocol is actually supported by the GPU.
 	 * ACE protocol has never been supported for command stream frontend GPUs.

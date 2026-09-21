@@ -27,6 +27,7 @@
 #include <linux/proc_fs.h>
 #include <linux/memblock.h>
 #include <linux/of_fdt.h>
+#include <linux/libfdt.h>
 #include <linux/efi.h>
 #include <linux/psci.h>
 #include <linux/sched/task.h>
@@ -276,6 +277,48 @@ static void __init setup_embedded_fdt(void)
 static inline void __init setup_embedded_fdt(void) { }
 #endif /* CONFIG_ARM64_EMBEDDED_DTB */
 
+/*
+ * The bootloader hands the kernel the LVTS efuse shadow table in
+ * /chosen/atag,devinfo: a word count followed by that many 32-bit words.
+ * setup_embedded_fdt() replaces the bootloader's FDT with the one linked
+ * into the image, which does not carry the property, so save a copy here.
+ * The mtk-devinfo NVMEM provider (and through it the LVTS thermal driver)
+ * reads the calibration from this copy.
+ */
+#define MTK_DEVINFO_MAX_WORDS	400
+u32 mtk_devinfo_blob[1 + MTK_DEVINFO_MAX_WORDS];	/* size + data */
+u32 mtk_devinfo_words;
+
+static void __init capture_bootloader_devinfo(void)
+{
+	const u32 *tag;
+	int chosen, len = 0;
+	u32 words;
+
+	chosen = fdt_path_offset(initial_boot_params, "/chosen");
+	if (chosen < 0)
+		chosen = fdt_path_offset(initial_boot_params, "/chosen@0");
+	if (chosen < 0)
+		return;
+
+	tag = fdt_getprop(initial_boot_params, chosen, "atag,devinfo", &len);
+	if (!tag || len < (int)sizeof(u32))
+		return;
+
+	words = tag[0];
+	if (!words || words > MTK_DEVINFO_MAX_WORDS ||
+	    len < (int)((1 + words) * sizeof(u32))) {
+		pr_warn("devinfo: bad atag,devinfo size %u (len %d)\n",
+			words, len);
+		return;
+	}
+
+	memcpy(&mtk_devinfo_blob[1], &tag[1], words * sizeof(u32));
+	mtk_devinfo_blob[0] = words;
+	mtk_devinfo_words = words;
+	pr_info("devinfo: captured bootloader atag,devinfo (%u words)\n", words);
+}
+
 static void __init request_standard_resources(void)
 {
 	struct memblock_region *region;
@@ -359,6 +402,9 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	early_ioremap_init();
 
 	setup_machine_fdt(__fdt_pointer);
+
+	/* Keep the LVTS calibration before the bootloader's tree is replaced. */
+	capture_bootloader_devinfo();
 
 	/*
 	 * Now that the bootloader's tree has populated memblock with the DRAM

@@ -22,6 +22,46 @@
 #include <linux/io.h>
 #include <linux/firmware.h>
 
+/*
+ * Reflashing the touch controller's own flash is destructive and is never
+ * needed on retail hardware (the vendor firmware is already programmed and
+ * Android restores it if it is ever lost).  A single flaky IDENTIFY read
+ * used to be enough to kick off an erase/write that could hang the boot and
+ * leave the controller blank, so it is now strictly opt-in.
+ */
+static bool flash_firmware;
+module_param(flash_firmware, bool, 0644);
+MODULE_PARM_DESC(flash_firmware,
+	"Reflash the touch controller firmware when it is not in application mode (dangerous; default off)");
+
+/*
+ * Diagnostic raw-frame capture.  Write N to dump the next N distinct touch
+ * frames to the kernel log; 0 disables it.  Used by the touch-diag userspace
+ * service to decode the on-wire object layout without a serial console.
+ */
+static unsigned int dump_frames;
+static unsigned int dump_count;
+static u32 dump_hash;
+static u16 dump_len;
+
+static int set_dump_frames(const char *val, const struct kernel_param *kp)
+{
+	int ret = kstrtouint(val, 0, &dump_frames);
+
+	if (ret)
+		return ret;
+	dump_count = 0;
+	return 0;
+}
+
+static const struct kernel_param_ops dump_frames_ops = {
+	.set = set_dump_frames,
+	.get = param_get_uint,
+};
+module_param_cb(dump_frames, &dump_frames_ops, &dump_frames, 0644);
+MODULE_PARM_DESC(dump_frames,
+	"Dump the next N distinct raw touch frames to the kernel log (default 0)");
+
 /* ---- TCM v1 protocol constants ---- */
 
 #define TCM_HEADER_SIZE			4
@@ -149,6 +189,17 @@ struct tcm_hw {
 	u16 panel_max_x;
 	u16 panel_max_y;
 	u8 max_objects;
+
+	/*
+	 * Optional edge calibration: the sensor's usable area does not quite
+	 * reach the glass edges, so touches near the border read short.  When
+	 * set, [cal_min, cal_max] (in panel pixels) is stretched to the full
+	 * [0, panel_max].  Zero means disabled.
+	 */
+	u16 cal_x_min;
+	u16 cal_x_max;
+	u16 cal_y_min;
+	u16 cal_y_max;
 
 	/* Touch report config (config-driven parser) */
 	u8 *touch_config;
@@ -531,19 +582,19 @@ static int tcm_get_app_info(struct tcm_hw *hw)
 		 *   [10-11] app_config_size
 		 *   [12-13] max_touch_report_config_size
 		 *   [14-15] max_touch_report_payload_size
-		 *   [16-31] customer_config_id (16 bytes)
-		 *   [32-33] max_x
-		 *   [34-35] max_y
-		 *   [36-37] max_objects
+		 *   [16-32] customer_config_id (length-prefixed, 17 bytes)
+		 *   [33-34] max_x
+		 *   [35-36] max_y
+		 *   [37-38] max_objects
 		 */
-		if (payload_len >= 38) {
+		if (payload_len >= 39) {
 			hw->max_touch_report_config_size =
 				p[12] | (p[13] << 8);
 			hw->max_touch_report_payload_size =
 				p[14] | (p[15] << 8);
-			hw->fw_max_x = p[32] | (p[33] << 8);
-			hw->fw_max_y = p[34] | (p[35] << 8);
-			hw->max_objects = p[36] | (p[37] << 8);
+			hw->fw_max_x = p[33] | (p[34] << 8);
+			hw->fw_max_y = p[35] | (p[36] << 8);
+			hw->max_objects = p[37] | (p[38] << 8);
 			if (hw->max_objects > TCM_MAX_SLOTS)
 				hw->max_objects = TCM_MAX_SLOTS;
 
@@ -754,6 +805,23 @@ static void tcm_parse_touch(struct tcm_hw *hw, const u8 *data, u16 len)
 	memset(obj_status, 0, sizeof(obj_status));
 	memset(obj_width, 0, sizeof(obj_width));
 
+	if (dump_frames && dump_count < dump_frames) {
+		u32 h = 2166136261u;
+		unsigned int i, n = min_t(u16, len, 96);
+
+		for (i = 0; i < n; i++) {
+			h ^= data[i];
+			h *= 16777619u;
+		}
+		if (h != dump_hash || len != dump_len) {
+			dump_hash = h;
+			dump_len = len;
+			pr_info("syna-tcm: rpt[%u] len=%u\n", dump_count, len);
+			tcm_hexdump("raw_rpt", data, min_t(u16, len, 64));
+			dump_count++;
+		}
+	}
+
 	if (hw->use_default_format) {
 		/*
 		 * Observed S3910 default report format:
@@ -767,17 +835,45 @@ static void tcm_parse_touch(struct tcm_hw *hw, const u8 *data, u16 len)
 		 * there, which used to drop the second finger.
 		 */
 		unsigned int obj_size = 12;
-		unsigned int off;
+		unsigned int base = 32;
+		unsigned int off, i;
 
 		if (len < 32)
 			goto done;
 
-		for (off = 32; off + obj_size <= (unsigned int)len; off += obj_size) {
+		/*
+		 * The byte-stream framing occasionally slips by one byte
+		 * (observed prefixes "00 00 03 00" / "00 00 a5 03" /
+		 * "00 03 00 00"), which would shift every object and make the
+		 * old fixed offset 32 read garbage such as a bogus finger
+		 * 0x01/0x80 with width ~106-128.  Relocate the object array by
+		 * finding the 0x1n finger marker that must be object byte 1.
+		 */
+		for (i = 29; i <= 35 && i + 1 < len; i++) {
+			if ((data[i + 1] & 0xf0) == 0x10) {
+				base = i;
+				break;
+			}
+		}
+
+		/*
+		 * Accept a partial trailing object (>= 7 bytes covers index,
+		 * type, x, y and width).  A frame whose prefix slipped by one
+		 * byte leaves only 11 bytes for its single object; requiring
+		 * the full 12 used to drop it and emit a bogus finger-up,
+		 * which showed up as extra keypresses on the touch keyboard.
+		 */
+		for (off = base; off + 7 <= (unsigned int)len; off += obj_size) {
 			const u8 *o = data + off;
 			u8 finger = o[1];
 			unsigned int idx = finger & 0x0f;
 
-			if (finger != 0 && idx < TCM_MAX_SLOTS) {
+			/*
+			 * Only real fingers carry type nibble 0x1; this also
+			 * drops 0x01/0x80 objects that leak in from a slipped
+			 * frame.
+			 */
+			if ((finger & 0xf0) == 0x10 && idx < TCM_MAX_SLOTS) {
 				obj_status[idx] = TCM_OBJ_FINGER;
 				obj_x[idx] = o[2] | (o[3] << 8);
 				obj_y[idx] = o[4] | (o[5] << 8);
@@ -928,12 +1024,34 @@ done:
 			u16 x = obj_x[obj];
 			u16 y = obj_y[obj];
 
+			/*
+			 * Raw positions are in the sensor range (fw_max, from
+			 * the DTS panel-coords).  Scale to the panel pixels
+			 * (panel_max, from display-coords).
+			 */
 			if (hw->fw_max_x && hw->panel_max_x &&
 			    hw->fw_max_x != hw->panel_max_x)
 				x = (u32)x * hw->panel_max_x / hw->fw_max_x;
 			if (hw->fw_max_y && hw->panel_max_y &&
 			    hw->fw_max_y != hw->panel_max_y)
 				y = (u32)y * hw->panel_max_y / hw->fw_max_y;
+
+			if (hw->cal_x_max > hw->cal_x_min && hw->panel_max_x) {
+				u32 v = (x > hw->cal_x_min) ?
+					x - hw->cal_x_min : 0;
+
+				v = v * hw->panel_max_x /
+					(hw->cal_x_max - hw->cal_x_min);
+				x = (v > hw->panel_max_x) ? hw->panel_max_x : v;
+			}
+			if (hw->cal_y_max > hw->cal_y_min && hw->panel_max_y) {
+				u32 v = (y > hw->cal_y_min) ?
+					y - hw->cal_y_min : 0;
+
+				v = v * hw->panel_max_y /
+					(hw->cal_y_max - hw->cal_y_min);
+				y = (v > hw->panel_max_y) ? hw->panel_max_y : v;
+			}
 
 			input_mt_report_slot_state(hw->input,
 				MT_TOOL_FINGER, true);
@@ -1433,20 +1551,6 @@ static int tcm_probe(struct spi_device *spi)
 		goto err_reg_disable;
 	}
 
-	/* Read panel coordinates from DTS for scaling */
-	{
-		u32 coords[2];
-
-		if (of_property_read_u32_array(spi->dev.of_node,
-					       "touchpanel,panel-coords",
-					       coords, 2) == 0) {
-			hw->panel_max_x = coords[0];
-			hw->panel_max_y = coords[1];
-			pr_info("syna-tcm: DTS panel-coords %dx%d\n",
-				hw->panel_max_x, hw->panel_max_y);
-		}
-	}
-
 	/* Reset the controller - active-low: LOW=assert, HIGH=release */
 	pr_info("syna-tcm: before reset: ATTN=%d RESET=%d\n",
 		gpiod_get_value(hw->irq), gpiod_get_value(hw->reset));
@@ -1553,35 +1657,61 @@ static int tcm_probe(struct spi_device *spi)
 	if (ret)
 		goto err_reg_disable;
 
-	/* If not in application mode, load firmware */
+	/*
+	 * An unexpected mode almost always means the controller was left in a
+	 * half-state by a previous probe (init rebinds SPI6).  Do NOT touch
+	 * its flash -- a transient IDENTIFY glitch must never erase the
+	 * running firmware.  A hardware reset + detect trigger brings it back
+	 * into application mode deterministically.
+	 */
 	if (hw->firmware_mode != MODE_APPLICATION &&
 	    hw->firmware_mode != MODE_APPLICATION_03) {
-		pr_info("syna-tcm: mode=0x%02x, loading firmware\n",
+		pr_warn("syna-tcm: unexpected mode 0x%02x, resetting controller\n",
 			hw->firmware_mode);
-		ret = tcm_load_firmware(hw);
-		if (ret == 0) {
-			/* Re-identify after firmware load */
-			gpiod_set_value(hw->reset, 0);
-			usleep_range(10000, 15000);
-			gpiod_set_value(hw->reset, 1);
-			msleep(200);
+		gpiod_set_value(hw->reset, 0);
+		usleep_range(10000, 15000);
+		gpiod_set_value(hw->reset, 1);
+		msleep(80);
+		{
+			u8 magic = TCM_DETECT_MAGIC;
 
-			/* Send trigger */
-			{
-				u8 magic = TCM_DETECT_MAGIC;
-				tcm_spi_write(hw, &magic, 1);
-				msleep(20);
-			}
-
-			ret = tcm_identify(hw);
-			if (ret == 0)
-				pr_info("syna-tcm: after fw load, mode=0x%02x\n",
-					hw->firmware_mode);
+			tcm_spi_write(hw, &magic, 1);
+			msleep(20);
 		}
+		tcm_identify(hw);
+
 		if (hw->firmware_mode != MODE_APPLICATION &&
-		    hw->firmware_mode != MODE_APPLICATION_03)
-			pr_warn("syna-tcm: still not in app mode (0x%02x)\n",
-				hw->firmware_mode);
+		    hw->firmware_mode != MODE_APPLICATION_03) {
+			if (!flash_firmware) {
+				pr_warn("syna-tcm: refusing to reflash firmware (mode=0x%02x); set syna_tcm_spi.flash_firmware=1 to allow\n",
+					hw->firmware_mode);
+			} else {
+				pr_info("syna-tcm: mode=0x%02x, loading firmware\n",
+					hw->firmware_mode);
+				ret = tcm_load_firmware(hw);
+				if (ret == 0) {
+					gpiod_set_value(hw->reset, 0);
+					usleep_range(10000, 15000);
+					gpiod_set_value(hw->reset, 1);
+					msleep(200);
+
+					{
+						u8 magic = TCM_DETECT_MAGIC;
+						tcm_spi_write(hw, &magic, 1);
+						msleep(20);
+					}
+
+					ret = tcm_identify(hw);
+					if (ret == 0)
+						pr_info("syna-tcm: after fw load, mode=0x%02x\n",
+							hw->firmware_mode);
+				}
+				if (hw->firmware_mode != MODE_APPLICATION &&
+				    hw->firmware_mode != MODE_APPLICATION_03)
+					pr_warn("syna-tcm: still not in app mode (0x%02x)\n",
+						hw->firmware_mode);
+			}
+		}
 	}
 
 	ret = tcm_get_app_info(hw);
@@ -1589,15 +1719,53 @@ static int tcm_probe(struct spi_device *spi)
 		goto err_reg_disable;
 
 	/*
-	 * Fetch the touch report config.  The report layout is bit-packed
-	 * and described entirely by this config, so the parser needs it
-	 * before any touch report arrives.  Do this before registering the
-	 * IRQ so the response is read by polling here.
+	 * Vendor-style coordinate calibration.  As in the vendor DTS,
+	 * "panel-coords" is the raw sensor range (e.g. 20480x44800, 16x the
+	 * panel pixels) and "display-coords" is the panel resolution.  The IC
+	 * reports positions in the raw range, so scaling raw*display/panel
+	 * gives pixels.  The app_info max_x/max_y are not reliable here and
+	 * are overridden when the DTS provides panel-coords.
 	 */
-	if (tcm_get_touch_report_config(hw) == 0)
-		pr_info("syna-tcm: using config-driven touch parser\n");
-	else
-		pr_warn("syna-tcm: no report config, using default format\n");
+	{
+		u32 raw[2], disp[2], cal[4];
+
+		if (of_property_read_u32_array(spi->dev.of_node,
+					       "touchpanel,panel-coords",
+					       raw, 2) == 0) {
+			hw->fw_max_x = raw[0];
+			hw->fw_max_y = raw[1];
+		}
+		if (of_property_read_u32_array(spi->dev.of_node,
+					       "touchpanel,display-coords",
+					       disp, 2) == 0) {
+			hw->panel_max_x = disp[0];
+			hw->panel_max_y = disp[1];
+		}
+		if (of_property_read_u32_array(spi->dev.of_node,
+					       "touchpanel,cal-coords",
+					       cal, 4) == 0) {
+			hw->cal_x_min = cal[0];
+			hw->cal_x_max = cal[1];
+			hw->cal_y_min = cal[2];
+			hw->cal_y_max = cal[3];
+		}
+		pr_info("syna-tcm: raw=%ux%u display=%ux%u cal x %u..%u y %u..%u\n",
+			hw->fw_max_x, hw->fw_max_y,
+			hw->panel_max_x, hw->panel_max_y,
+			hw->cal_x_min, hw->cal_x_max,
+			hw->cal_y_min, hw->cal_y_max);
+	}
+
+	/*
+	 * The report descriptor the IC returns describes the *configuration*
+	 * layout, not the HBP active-frame (0x23/0x11) records this driver
+	 * consumes.  Decoding the actual frames shows they are the
+	 * byte-oriented 32-byte-prefix + 12-byte objects handled by the
+	 * default parser, so the config is only fetched to leave the IC in a
+	 * known state.  Do this before registering the IRQ so the response is
+	 * read by polling here.
+	 */
+	tcm_get_touch_report_config(hw);
 
 	/* Register input device */
 	input = devm_input_allocate_device(&spi->dev);

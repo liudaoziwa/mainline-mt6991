@@ -76,6 +76,8 @@ void mtk_aal_config(struct device *dev, unsigned int w,
 
 	mtk_ddp_write(cmdq_pkt, sz, &aal->cmdq_reg, aal->regs, DISP_AAL_SIZE);
 	mtk_ddp_write(cmdq_pkt, sz, &aal->cmdq_reg, aal->regs, DISP_AAL_OUTPUT_SIZE);
+	mtk_ddp_write(cmdq_pkt, AAL_RELAY_MODE, &aal->cmdq_reg, aal->regs,
+		      DISP_AAL_CFG);
 }
 
 /**

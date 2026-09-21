@@ -25,6 +25,13 @@
 		ranges;
 
 		/*
+		 * LK's chip-id tag, from the vendor FDT's /chosen/atag,chipid.
+		 * The LVTS driver reads sw_ver to decide whether the A0 sensor-id
+		 * remap applies; non-zero means production silicon, no remap.
+		 */
+		atag,chipid = <0x18000000 0x57130000 0x8a0000 0x1ca0000 0x1000000>;
+
+		/*
 		 * Live bootloader framebuffer, from /chosen/atag,videolfb in the
 		 * vendor FDT: fb_base 0xfd6b0000, 60.00 Hz, 0x2940000 of VRAM
 		 * (three 1280x2800 buffers plus alignment slack), panel
@@ -85,14 +92,16 @@
 			no-map;
 		};
 
-		drm_fb_pool: drm-fb-pool@fe470000 {
-			compatible = "shared-dma-pool";
-			/*
-			 * One 1280x2800x32 framebuffer needs 3500 pages; the
-			 * coherent-pool bitmap only serves power-of-two
-			 * orders, so give it a full 16 MiB (order 12).
-			 */
-			reg = <0x0 0xfe470000 0x0 0x01000000>;
+	drm_fb_pool: drm-fb-pool@fe470000 {
+		compatible = "shared-dma-pool";
+		/*
+		 * OVL internal DMA pool for dummy/conversion buffers.
+		 * One 12800x2800x4 framebuffer needs ~137 MiB but those
+		 * are allocated from CMA, not here.  This pool is for
+		 * the OVL driver's internal scratch allocations; 48 MiB
+		 * provides headroom.
+		 */
+		reg = <0x0 0xfe470000 0x0 0x03000000>;
 			/*
 			 * Must be no-map: dma_init_coherent_memory() memremaps
 			 * the region and the kernel refuses to alias System RAM.
@@ -183,7 +192,48 @@
 		regulator-always-on;
 		regulator-boot-on;
 	};
+
+	/*
+	 * CPU DVFS supply stub: mediatek-cpufreq-hw asks for a "cpu" supply on
+	 * every CPU.  The real CPU voltage is stepped by the SoC's hardware
+	 * DVFS, so a fixed always-on regulator is enough and silences the
+	 * "supply cpu not found, using dummy regulator" warning.
+	 */
+	vproc: regulator-vproc {
+		compatible = "regulator-fixed";
+		regulator-name = "vproc";
+		regulator-min-microvolt = <800000>;
+		regulator-max-microvolt = <800000>;
+		regulator-always-on;
+	};
+
+	/*
+	 * GPU supply stub: panthor calls dev_pm_opp_set_regulators() with
+	 * names[] = { "mali" } and refuses to probe without it.  The real VGPU
+	 * rail is left powered as the bootloader set it.  min == max is
+	 * required by regulator-fixed.
+	 */
+	vdd_gpu: regulator-gpu {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_gpu";
+		regulator-min-microvolt = <750000>;
+		regulator-max-microvolt = <750000>;
+		regulator-always-on;
+	};
 };
+
+&gpu {
+	mali-supply = <&vdd_gpu>;
+};
+
+&cpu0 { cpu-supply = <&vproc>; };
+&cpu1 { cpu-supply = <&vproc>; };
+&cpu2 { cpu-supply = <&vproc>; };
+&cpu3 { cpu-supply = <&vproc>; };
+&cpu4 { cpu-supply = <&vproc>; };
+&cpu5 { cpu-supply = <&vproc>; };
+&cpu6 { cpu-supply = <&vproc>; };
+&cpu7 { cpu-supply = <&vproc>; };
 
 &uart0 {
 	status = "okay";
@@ -253,6 +303,56 @@
 };
 
 /*
+ * I2C0: magnetometer (AKM AK09918 @0x0e) and ALS/proximity (AMS TCS3720
+ * @0x39).  Neither has a mainline driver yet; the bus is brought up so they
+ * can be probed once drivers are ported.
+ */
+&i2c0 {
+	status = "okay";
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_i2c0>;
+};
+
+/*
+ * I2C1: accelerometer + gyroscope, Bosch BMI2xx (vendor "bmi2xy").
+ * Mainline has the IIO bmi270 driver (bosch,bmi260 / bosch,bmi270).
+ */
+&i2c1 {
+	status = "okay";
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_i2c1>;
+
+	bmi270@68 {
+		compatible = "bosch,bmi270";
+		reg = <0x68>;
+		status = "okay";
+	};
+
+	bmi270@69 {
+		compatible = "bosch,bmi270";
+		reg = <0x69>;
+		status = "okay";
+	};
+};
+
+/* The gsensor bus may be i2c0 instead (oplus "i2c_num" mapping); try both. */
+&i2c0 {
+	bmi270@68 {
+		compatible = "bosch,bmi270";
+		reg = <0x68>;
+		status = "okay";
+	};
+
+	bmi270@69 {
+		compatible = "bosch,bmi270";
+		reg = <0x69>;
+		status = "okay";
+	};
+};
+
+/*
  * UFS.  The HCI already works off the bootloader/ATF-configured state
  * (device reset done, scsi host, MCQ), so this node only hands the
  * driver the passive freq-table-hz it asks for -- it silences
@@ -280,11 +380,21 @@
 &ovl0 {
 	status = "okay";
 	/*
-	 * DMA buffer pool: the display SMMU is owned by the bootloader and
-	 * only maps the bootloader VRAM, so the DRM framebuffer must come
-	 * from there (see drm-fb-pool above).
+	 * EXPERIMENT (DRM_CMA_SMMU_ISSUE.md option B): do NOT give the OVL a
+	 * reserved coherent pool.  A coherent pool makes dma_alloc_attrs()
+	 * return early on failure without ever falling back to CMA, so with
+	 * only 48 MiB available every extra dumb buffer fails (screen
+	 * flicker / scale-change freeze).  Without it, DRM allocations go to
+	 * the 256 MiB CMA at 0xc2000000.
+	 *
+	 * The vendor runs EXDMA3 with mtk,smmu-dma-mode = "bypass", so the
+	 * hardware may accept physical addresses directly.  If the display
+	 * freezes instead, the bootloader-managed MM SMMU is translating
+	 * and we need option A (take over the SMMU).
+	 *
+	 * Revert: restore "memory-region = <&drm_fb_pool>;".
 	 */
-	memory-region = <&drm_fb_pool>;
+	/* memory-region = <&drm_fb_pool>; */
 };
 
 /* Superseded by the fb-console + drm-fb-pool split above. */
@@ -332,6 +442,24 @@
 			drive-strength = <MTK_DRIVE_8mA>;
 		};
 	};
+
+	/* I2C0: SCL=GPIO99, SDA=GPIO100 (vendor scl/sda-gpio-id 0x63/0x64) */
+	pinctrl_i2c0: i2c0-pins {
+		pins {
+			pinmux = <PINMUX_GPIO99__FUNC_SCL0>,
+				 <PINMUX_GPIO100__FUNC_SDA0>;
+			bias-pull-up;
+		};
+	};
+
+	/* I2C1: SCL=GPIO200, SDA=GPIO201 (vendor scl/sda-gpio-id 0xc8/0xc9) */
+	pinctrl_i2c1: i2c1-pins {
+		pins {
+			pinmux = <PINMUX_GPIO200__FUNC_SCL1>,
+				 <PINMUX_GPIO201__FUNC_SDA1>;
+			bias-pull-up;
+		};
+	};
 };
 
 &spi6 {
@@ -353,8 +481,19 @@
 		avdd-supply = <&reg_vtouch>;
 
 		touchpanel,max-num-support = <10>;
+		/*
+		 * panel-coords is the raw sensor range reported by the IC
+		 * (app_info max = 12799 x 27999, i.e. 10x the panel pixels);
+		 * display-coords is the panel resolution in pixels.
+		 */
 		touchpanel,panel-coords = <12800 28000>;
 		touchpanel,display-coords = <1280 2800>;
+		/*
+		 * Edge calibration: stretch the sensor's usable window to the
+		 * full panel so touches near the border reach the very edge
+		 * (the sensor's active area is slightly inset).
+		 */
+		touchpanel,cal-coords = <30 1264 16 2796>;
 	};
 };
 

@@ -9,6 +9,7 @@
 
 #include <linux/clk.h>
 #include <linux/component.h>
+#include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_reserved_mem.h>
@@ -182,6 +183,29 @@ static const u32 mt8195_formats[] = {
 	DRM_FORMAT_YUYV,
 };
 
+/*
+ * MT6991: the bootloader brings up the OVL-EXDMA -> blender -> DSC -> DSI
+ * chain in 8-bit mode.  Advertising the 10-bit RGB formats here makes mutter
+ * (GNOME 46 / Ubuntu 24.04) pick XR30, which the 8-bit pipeline then
+ * mis-decodes and the screen shows scrambled colors.  Restrict the plane to
+ * 8-bit so the compositor scans out XR24 like it does on the working setup.
+ */
+static const u32 mt6991_formats[] = {
+	DRM_FORMAT_XRGB8888,
+	DRM_FORMAT_ARGB8888,
+	DRM_FORMAT_BGRX8888,
+	DRM_FORMAT_BGRA8888,
+	DRM_FORMAT_ABGR8888,
+	DRM_FORMAT_XBGR8888,
+	DRM_FORMAT_RGBX8888,
+	DRM_FORMAT_RGBA8888,
+	DRM_FORMAT_RGB888,
+	DRM_FORMAT_BGR888,
+	DRM_FORMAT_RGB565,
+	DRM_FORMAT_UYVY,
+	DRM_FORMAT_YUYV,
+};
+
 struct mtk_disp_ovl_data {
 	unsigned int addr;
 	unsigned int gmc_bits;
@@ -209,6 +233,7 @@ struct mtk_disp_ovl {
 	const struct mtk_disp_ovl_data	*data;
 	void				(*vblank_cb)(void *data);
 	void				*vblank_cb_data;
+	void __iomem			*exdma4_regs;
 };
 
 static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
@@ -681,6 +706,16 @@ void mtk_ovl_layer_config(struct device *dev, unsigned int idx,
 		mtk_ddp_write_relaxed(cmdq_pkt, addr, &ovl->cmdq_reg, ovl->regs,
 				      DISP_REG_OVL_ADDR(ovl, idx));
 
+		/*
+		 * EXDMA4 is the bootloader "bootup" blend layer; it still
+		 * points at the LK framebuffer (with the lingering "device
+		 * unlocked" warning), unlike EXDMA3 which we repoint above.
+		 * Mirror the vendor's mtk_ovl_replace_bootup_mva(): give it the
+		 * same scanout buffer so the warning disappears.
+		 */
+		if (ovl->exdma4_regs)
+			writel(addr, ovl->exdma4_regs + DISP_REG_OVL_ADDR_MT8173);
+
 		mtk_ovl_layer_on(dev, idx, cmdq_pkt);
 		return;
 	}
@@ -820,6 +855,10 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	priv->data = of_device_get_match_data(dev);
 	platform_set_drvdata(pdev, priv);
 
+	/* Companion bootloader blend layer (see the repoint in layer_config). */
+	if (priv->data->is_exdma)
+		priv->exdma4_regs = ioremap(0x32870000, 0x1000);
+
 	/*
 	 * The DRM framebuffer is allocated against this device (see
 	 * drm_dev_set_dma_dev() in mtk_drm_drv.c).  If the node carries a
@@ -953,8 +992,8 @@ static const struct mtk_disp_ovl_data mt6991_ovl_exdma_driver_data = {
 	.blend_modes = BIT(DRM_MODE_BLEND_PREMULTI) |
 		       BIT(DRM_MODE_BLEND_COVERAGE) |
 		       BIT(DRM_MODE_BLEND_PIXEL_NONE),
-	.formats = mt8195_formats,
-	.num_formats = ARRAY_SIZE(mt8195_formats),
+	.formats = mt6991_formats,
+	.num_formats = ARRAY_SIZE(mt6991_formats),
 };
 
 static const struct of_device_id mtk_disp_ovl_driver_dt_match[] = {

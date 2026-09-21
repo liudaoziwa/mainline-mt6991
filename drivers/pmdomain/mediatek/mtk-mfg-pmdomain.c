@@ -465,8 +465,11 @@ static int mtk_mfg_send_ipi(struct mtk_mfg *mfg, struct mtk_mfg_ipi_msg *msg)
 	}
 
 	wait = wait_for_completion_timeout(&mfg->gf_mbox->rx_done, msecs_to_jiffies(500));
-	if (!wait)
+	if (!wait) {
+		dev_err(dev, "GPUFreq IPI cmd=%u magic=0x%x TIMEOUT\n",
+			msg->cmd, mfg->ipi_magic);
 		return -ETIMEDOUT;
+	}
 
 	msg = mfg->gf_mbox->rx_data;
 
@@ -531,6 +534,8 @@ static int mtk_mfg_set_oppidx(struct mtk_mfg *mfg, unsigned int opp_idx)
 			opp_idx, ERR_PTR(ret));
 		return ret;
 	}
+	dev_info(&mfg->pdev->dev, "set_oppidx OK: opp=%u (num_gpu_opps=%u)\n",
+		 opp_idx, mfg->num_gpu_opps);
 
 	return 0;
 }
@@ -739,6 +744,7 @@ static int mtk_mfg_power_on(struct generic_pm_domain *pd)
 		goto err_disable_clks;
 
 	mfg->ipi_magic = readl(mfg->gpr + GPR_IPI_MAGIC);
+	dev_info(&mfg->pdev->dev, "GPUEB power_on: ipi_magic=0x%x\n", mfg->ipi_magic);
 
 	ret = mtk_mfg_power_control(mfg, true);
 	if (ret)

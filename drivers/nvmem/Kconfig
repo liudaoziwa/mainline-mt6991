@@ -227,6 +227,15 @@ config NVMEM_MTK_EFUSE
 	  This driver can also be built as a module. If so, the module
 	  will be called efuse-mtk.
 
+config NVMEM_MTK_DEVINFO
+	tristate "MediaTek bootloader devinfo NVMEM support"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  The bootloader passes an efuse shadow table to the kernel in the
+	  /chosen "atag,devinfo" property.  This exposes it as an NVMEM
+	  provider; on MT6991 it is the calibration source for the LVTS
+	  thermal sensors.
+
 config NVMEM_MXS_OCOTP
 	tristate "Freescale MXS On-Chip OTP Memory Support"
 	depends on ARCH_MXS || COMPILE_TEST

@@ -42,16 +42,61 @@
 		clock-output-names = "clk26m";
 	};
 
+	/*
+	 * MFG (Multi-Frequency Graphics) infrastructure.
+	 *
+	 * The bootloader loads GPUEB firmware to a Cortex-M4 MCU at 0x4b000000
+	 * and leaves the MFG power domain in an initialised state.  The
+	 * mainline mtk-mfg-pmdomain driver (compatible "mediatek,mt8196-gpufreq")
+	 * communicates with GPUEB via IPI to manage power, clocks and DVFS.
+	 * Panthor uses the power-domain and clock providers that this driver
+	 * registers.
+	 */
+
+	/* 26 MHz reference for the MFG PLLs (parent of mfgpll etc.) */
+	mfg_eb_clk: mfg-eb-clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <26000000>;
+		clock-output-names = "mfg_pll_ref";
+	};
+
+	/* Dummy GPU regulators -- GPUEB controls the real ones via SPMI */
+	vdd_gpu_core: regulator-gpu-core {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_gpu_core";
+		regulator-min-microvolt = <850000>;
+		regulator-max-microvolt = <850000>;
+		regulator-always-on;
+	};
+
+	vdd_gpu_stack: regulator-gpu-stack {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_gpu_stack";
+		regulator-min-microvolt = <850000>;
+		regulator-max-microvolt = <850000>;
+		regulator-always-on;
+	};
+
+	vdd_gpu_sram: regulator-gpu-sram {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_gpu_sram";
+		regulator-min-microvolt = <500000>;
+		regulator-max-microvolt = <500000>;
+		regulator-always-on;
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		/* 4x Cortex-A720 @ 2.0 GHz */
+		/* 4x Cortex-A720 @ 2.0 GHz -- DVFS domain 0 */
 		cpu0: cpu@0 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a720";
 			reg = <0x000>;
 			enable-method = "psci";
+			performance-domains = <&performance 0>;
 			capacity-dmips-mhz = <714>;
 			#cooling-cells = <2>;
 		};
@@ -61,6 +106,7 @@
 			compatible = "arm,cortex-a720";
 			reg = <0x100>;
 			enable-method = "psci";
+			performance-domains = <&performance 0>;
 			capacity-dmips-mhz = <714>;
 			#cooling-cells = <2>;
 		};
@@ -70,6 +116,7 @@
 			compatible = "arm,cortex-a720";
 			reg = <0x200>;
 			enable-method = "psci";
+			performance-domains = <&performance 0>;
 			capacity-dmips-mhz = <714>;
 			#cooling-cells = <2>;
 		};
@@ -79,16 +126,18 @@
 			compatible = "arm,cortex-a720";
 			reg = <0x300>;
 			enable-method = "psci";
+			performance-domains = <&performance 0>;
 			capacity-dmips-mhz = <714>;
 			#cooling-cells = <2>;
 		};
 
-		/* 3x Cortex-X4 @ 2.85 GHz */
+		/* 3x Cortex-X4 @ 2.85 GHz -- DVFS domain 1 */
 		cpu4: cpu@400 {
 			device_type = "cpu";
 			compatible = "arm,cortex-x4";
 			reg = <0x400>;
 			enable-method = "psci";
+			performance-domains = <&performance 1>;
 			capacity-dmips-mhz = <1024>;
 			#cooling-cells = <2>;
 		};
@@ -98,6 +147,7 @@
 			compatible = "arm,cortex-x4";
 			reg = <0x500>;
 			enable-method = "psci";
+			performance-domains = <&performance 1>;
 			capacity-dmips-mhz = <1024>;
 			#cooling-cells = <2>;
 		};
@@ -107,16 +157,18 @@
 			compatible = "arm,cortex-x4";
 			reg = <0x600>;
 			enable-method = "psci";
+			performance-domains = <&performance 1>;
 			capacity-dmips-mhz = <1024>;
 			#cooling-cells = <2>;
 		};
 
-		/* 1x Cortex-X925 @ 3.73 GHz */
+		/* 1x Cortex-X925 @ 3.73 GHz -- DVFS domain 2 */
 		cpu7: cpu@700 {
 			device_type = "cpu";
 			compatible = "arm,cortex-x925";
 			reg = <0x700>;
 			enable-method = "psci";
+			performance-domains = <&performance 2>;
 			capacity-dmips-mhz = <937>;
 			#cooling-cells = <2>;
 		};
@@ -162,6 +214,24 @@
 		#size-cells = <2>;
 		ranges;
 		dma-ranges = <0x0 0x0 0x0 0x0 0x4 0x0>;
+
+		/*
+		 * CPU DVFS: one performance domain per cluster (A720 / X4 /
+		 * X925).  The mainline mediatek-cpufreq-hw driver reads the
+		 * frequency LUT straight from these registers and writes the
+		 * performance state back; the SoC's hardware DVFS takes care
+		 * of the voltage.
+		 */
+		performance: performance-controller@c2c0f20 {
+			compatible = "mediatek,cpufreq-hw";
+			reg = <0x0 0xc2c0f20 0x0 0x120>,
+			      <0x0 0xc2c1040 0x0 0x120>,
+			      <0x0 0xc2c1160 0x0 0x120>;
+			reg-names = "performance-domain0",
+				    "performance-domain1",
+				    "performance-domain2";
+			#performance-domain-cells = <1>;
+		};
 
 		gic: interrupt-controller@c400000 {
 			compatible = "arm,gic-v3";
@@ -244,6 +314,48 @@
 			reg = <0 0x16640000 0 0x1000>;
 			mediatek,hardware-voter = <&hwv>;
 			#clock-cells = <1>;
+		};
+
+		/* IMP_IIC_WRAP_N -- I2C1/I2C2/... gate provider ("north" domain) */
+		imp_iic_wrap_n: clock-controller@13c30000 {
+			compatible = "mediatek,mt8196-imp-iic-wrap-n", "syscon";
+			reg = <0 0x13c30000 0 0x1000>;
+			#clock-cells = <1>;
+			/* One of the impn gates uses the HWV op (see clk driver). */
+			mediatek,hardware-voter = <&hwv>;
+		};
+
+		/*
+		 * I2C0 -- fuel gauge + magnetometer (AK09918 @0x0e) and
+		 * ALS/proximity (TCS3720 @0x39).
+		 */
+		i2c0: i2c@13130000 {
+			compatible = "mediatek,mt8192-i2c";
+			reg = <0 0x13130000 0 0x20000>,
+			      <0 0x16370000 0 0x10000>;
+			interrupts = <GIC_SPI 342 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&imp_iic_wrap_w CLK_IMPW_I2C0>,
+				 <&pericfg_ao CLK_PERI_AO_AP_DMA_X32W_BCLK>;
+			clock-names = "main", "dma";
+			clock-div = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/* I2C1 -- accel/gyro (Bosch BMI2xx) */
+		i2c1: i2c@13930000 {
+			compatible = "mediatek,mt8192-i2c";
+			reg = <0 0x13930000 0 0x80000>,
+			      <0 0x16380000 0 0x10000>;
+			interrupts = <GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&imp_iic_wrap_n CLK_IMPN_I2C1>,
+				 <&pericfg_ao CLK_PERI_AO_AP_DMA_X32W_BCLK>;
+			clock-names = "main", "dma";
+			clock-div = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
 		};
 
 		/*
@@ -646,5 +758,182 @@
 		clock-names = "parent-clk", "sel-clk", "spi-clk";
 		mediatek,pad-select = <1>;
 		status = "disabled";
+	};
+
+	/*
+	 * MFG PLL clock controllers.  These syscon nodes wrap the three
+	 * MFG PLLs that GPUEB uses for GPU frequency scaling.  The
+	 * clk-mt8196-mfg driver registers them as clocks so the
+	 * mtk-mfg-pmdomain driver can hand them to panthor.
+	 */
+	mfgpll_pll: syscon@4b810000 {
+		compatible = "mediatek,mt6991-mfgpll_pll_ctrl", "syscon";
+		reg = <0x0 0x4b810000 0x0 0x0400>;
+		clocks = <&mfg_eb_clk>;
+		#clock-cells = <0>;
+	};
+
+	mfgpll_sc0_pll: syscon@4b810400 {
+		compatible = "mediatek,mt6991-mfgpll_sc0_pll_ctrl", "syscon";
+		reg = <0x0 0x4b810400 0x0 0x0400>;
+		clocks = <&mfg_eb_clk>;
+		#clock-cells = <0>;
+	};
+
+	mfgpll_sc1_pll: syscon@4b810800 {
+		compatible = "mediatek,mt6991-mfgpll_sc1_pll_ctrl", "syscon";
+		reg = <0x0 0x4b810800 0x0 0x1000>;
+		clocks = <&mfg_eb_clk>;
+		#clock-cells = <0>;
+	};
+
+	/*
+	 * GPUEB mailbox controller.  Provides IPI channels between the
+	 * application processor and the GPUEB firmware.
+	 */
+	gpueb_mbox: gpueb-mbox@4b09fd80 {
+		compatible = "mediatek,mt8196-gpueb-mbox";
+		reg = <0x0 0x4b09fd80 0x0 0x280>,
+		      <0x0 0x4b170000 0x0 0x7c>;
+		reg-names = "data", "ctl";
+		interrupts = <GIC_SPI 608 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&mfg_eb_clk>;
+		#mbox-cells = <1>;
+	};
+
+	/*
+	 * MFG power-domain controller.  Communicates with GPUEB via IPI
+	 * to manage GPU power, clocks and OPP tables.
+	 */
+	mfg_pd: power-controller@4b09fd00 {
+		compatible = "mediatek,mt8196-gpufreq";
+		reg = <0x0 0x4b09fd00 0x0 0x80>,
+		      <0x0 0x4b800000 0x0 0x1000>,
+		      <0x0 0x4b860128 0x0 0x04>;
+		reg-names = "gpr", "rpc", "hw-revision";
+		clocks = <&mfg_eb_clk>,
+			 <&mfgpll_pll>,
+			 <&mfgpll_sc0_pll>,
+			 <&mfgpll_sc1_pll>;
+		clock-names = "eb", "core", "stack0", "stack1";
+		mboxes = <&gpueb_mbox 0>, <&gpueb_mbox 1>, <&gpueb_mbox 2>,
+			 <&gpueb_mbox 3>, <&gpueb_mbox 4>, <&gpueb_mbox 5>,
+			 <&gpueb_mbox 7>;
+		mbox-names = "fast-dvfs-event", "gpufreq", "sleep",
+			     "timer", "fhctl", "ccf", "fast-dvfs";
+		memory-region = <&gpueb_shared>;
+		core-supply = <&vdd_gpu_core>;
+		stack-supply = <&vdd_gpu_stack>;
+		sram-supply = <&vdd_gpu_sram>;
+		#clock-cells = <1>;
+		#nvmem-cell-cells = <0>;
+		#power-domain-cells = <0>;
+
+		shader-present {
+		};
+	};
+
+	/*
+	 * ARM Immortalis-G925 GPU via panthor (CSF generation).
+	 *
+	 * Power and clocks are managed by the MFG pmdomain driver
+	 * (mtk-mfg-pmdomain), which communicates with GPUEB firmware.
+	 * OPP tables are read from GPUEB shared memory at boot.
+	 *
+	 * Interrupt layout (from vendor DTS, same on MT8196/MT6991):
+	 *   SPI 606 = JOB,  SPI 605 = MMU,  SPI 604 = GPU
+	 */
+	gpu: gpu@48000000 {
+		compatible = "mediatek,mt8196-mali", "arm,mali-valhall-csf";
+		reg = <0x0 0x48000000 0x0 0x480000>;
+		interrupts = <GIC_SPI 606 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 605 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 604 IRQ_TYPE_LEVEL_HIGH 0>;
+		interrupt-names = "job", "mmu", "gpu";
+		clocks = <&mfg_pd 0>;
+		power-domains = <&mfg_pd>;
+		status = "okay";
+	};
+};
+
+/ {
+/*
+ * Bootloader device info table (/chosen/atag,devinfo).  The LVTS sensors'
+ * per-unit calibration counts live in this table, not in the raw efuse
+ * window at the same offsets.
+ */
+devinfo {
+	compatible = "mediatek,devinfo";
+	#address-cells = <1>;
+	#size-cells = <1>;
+	lvts_e_data1: data1@304 { reg = <0x304 0xc>; };
+	lvts_e_data2: data2@350 { reg = <0x350 0x14>; };
+	lvts_e_data3: data3@43c { reg = <0x43c 0x20>; };
+	lvts_e_data4: data4@478 { reg = <0x478 0x20>; };
+};
+/*
+ * LVTS: four controllers / 31 on-die thermal sensors.  MT6991 needs no
+ * gating clock or reset (.clock_gate_no_need / .reset_no_need in the
+ * driver's per-SoC data), so only the register banks and IRQs are wired.
+ */
+lvts: lvts@14414000 {
+	compatible = "mediatek,mt6991-lvts";
+	#thermal-sensor-cells = <1>;
+	reg = <0x0 0x14414000 0x0 0x1000>,
+	      <0x0 0xc230000 0x0 0x1000>,
+	      <0x0 0x19004000 0x0 0x1000>,
+	      <0x0 0x4b400000 0x0 0x1000>;
+	interrupts = <GIC_SPI 358 IRQ_TYPE_LEVEL_HIGH 0>,
+		     <GIC_SPI 104 IRQ_TYPE_LEVEL_HIGH 0>,
+		     <GIC_SPI 647 IRQ_TYPE_LEVEL_HIGH 0>,
+		     <GIC_SPI 614 IRQ_TYPE_LEVEL_HIGH 0>;
+	nvmem-cells = <&lvts_e_data1>, <&lvts_e_data2>,
+		      <&lvts_e_data3>, <&lvts_e_data4>;
+	nvmem-cell-names = "e_data1", "e_data2", "e_data3", "e_data4";
+	status = "okay";
+};
+	thermal-zones {
+		soc_max {
+			polling-delay = <0>;
+			polling-delay-passive = <0>;
+			thermal-sensors = <&lvts 0x00>;
+			trips {
+				so_max_crit: so-max-crit {
+					temperature = <0x1d010>;
+					hysteresis = <0x7d0>;
+					type = "critical";
+				};
+			};
+		};
+		cpu-medium-core6-0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x01>; };
+		cpu-medium-core6-1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x02>; };
+		cpu-dsu2 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x03>; };
+		cpu-dsu3 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x04>; };
+		cpu-little-core3 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x05>; };
+		cpu-little-core0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x06>; };
+		cpu-little-core1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x07>; };
+		cpu-little-core2 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x08>; };
+		cpu-medium-core4-0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x09>; };
+		cpu-medium-core4-1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x0a>; };
+		cpu-medium-core5-0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x0b>; };
+		cpu-medium-core5-1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x0c>; };
+		cpu-dsu0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x0d>; };
+		cpu-dsu1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x0e>; };
+		cpu-big-core7-0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x0f>; };
+		cpu-big-core7-1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x10>; };
+		apu-a0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x11>; };
+		apu-a1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x12>; };
+		apu-a2 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x13>; };
+		apu-a3 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x14>; };
+		gpu0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x15>; };
+		gpu1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x16>; };
+		soc-top0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x17>; };
+		soc-top1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x18>; };
+		soc-top2 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x19>; };
+		soc-top3 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x1a>; };
+		soc-bot0 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x1b>; };
+		soc-bot1 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x1c>; };
+		soc-bot2 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x1d>; };
+		soc-bot3 { polling-delay = <0>; polling-delay-passive = <0>; thermal-sensors = <&lvts 0x1e>; };
 	};
 };

@@ -163,8 +163,11 @@ int panthor_devfreq_init(struct panthor_device *ptdev)
 	 * already.
 	 */
 	table = dev_pm_opp_get_opp_table(dev);
+	DRM_DEV_INFO(dev, "panthor-devfreq: opp_table err=%ld\n",
+		     IS_ERR(table) ? PTR_ERR(table) : 0L);
 	if (IS_ERR_OR_NULL(table)) {
 		ret = devm_pm_opp_set_regulators(dev, reg_names);
+		DRM_DEV_INFO(dev, "panthor-devfreq: set_regulators ret=%d\n", ret);
 		if (ret && ret != -ENODEV) {
 			if (ret != -EPROBE_DEFER)
 				DRM_DEV_ERROR(dev, "Couldn't set OPP regulators\n");
@@ -172,6 +175,7 @@ int panthor_devfreq_init(struct panthor_device *ptdev)
 		}
 
 		ret = devm_pm_opp_of_add_table(dev);
+		DRM_DEV_INFO(dev, "panthor-devfreq: of_add_table ret=%d\n", ret);
 		if (ret)
 			return ret;
 	} else {
@@ -215,6 +219,8 @@ int panthor_devfreq_init(struct panthor_device *ptdev)
 	}
 
 	opp = devfreq_recommended_opp(dev, &cur_freq, 0);
+	DRM_DEV_INFO(dev, "panthor-devfreq: recommended_opp err=%ld freq=%lu\n",
+		     IS_ERR(opp) ? PTR_ERR(opp) : 0L, cur_freq);
 	if (IS_ERR(opp))
 		return PTR_ERR(opp);
 
@@ -233,6 +239,8 @@ int panthor_devfreq_init(struct panthor_device *ptdev)
 
 	/* Find the fastest defined rate  */
 	opp = dev_pm_opp_find_freq_floor(dev, &freq);
+	DRM_DEV_INFO(dev, "panthor-devfreq: freq_floor err=%ld freq=%lu\n",
+		     IS_ERR(opp) ? PTR_ERR(opp) : 0L, freq);
 	if (IS_ERR(opp))
 		return PTR_ERR(opp);
 	ptdev->fast_rate = freq;
