@@ -147,7 +147,7 @@ CONFIG_ARM64_EMBEDDED_DTB_SOURCE="arch/arm64/boot/dts/mediatek/mt6991-realme-rmx
 # every gate the bootloader left enabled but no mainline driver claims yet --
 # including, quite possibly, the display pipeline the framebuffer prints
 # through.  With the flag the kernel leaves hardware exactly as handed over.
-CONFIG_CMDLINE="console=tty0 ignore_loglevel no_console_suspend panic=0 nokaslr clk_ignore_unused pd_ignore_unused eusb2_keep_calib"
+CONFIG_CMDLINE="kvm-arm.mode=nvhe earlycon=uart8250,mmio32,0x16000000 console=ttyS0,115200n8 console=tty0 ignore_loglevel no_console_suspend panic=0 nokaslr clk_ignore_unused pd_ignore_unused eusb2_keep_calib cma=256M swiotlb=65536"
 CONFIG_CMDLINE_FORCE=y
 
 # --- Build hygiene on-device ---------------------------------------------
@@ -199,6 +199,10 @@ CONFIG_MAILBOX=y
 # MT8196/MT6991 display clock gate drivers (mmsys0/mmsys1/ovl/vdisp)
 CONFIG_COMMON_CLK_MT8196_MMSYS=y
 
+# MFG (GPU) subsystem clock gate — enables the bg3d gate that the
+# panthor driver's power path may request.
+CONFIG_COMMON_CLK_MT8196_MFGCFG=y
+
 # MTK display subsystem (built-in for MT6991 DSI + OVL + DDP pipeline)
 CONFIG_DRM_MEDIATEK=y
 CONFIG_MTK_MMSYS=y
@@ -206,6 +210,12 @@ CONFIG_PHY_MTK_MIPI_DSI=y
 
 # The ae031 panel driver (1280x2800, DSI video mode, DSC)
 CONFIG_DRM_PANEL_AE031_DSI_VDO=y
+
+# --- GPU (ARM Immortalis-G925) ---------------------------------------------
+# panthor is the mainline DRM driver for ARMv9 Mali/Immortalis GPUs.
+# Must be built-in (=y) because there are no kernel modules on the rootfs.
+# Dependencies (DRM_SCHED, DRM_GPUVM, DRM_EXEC, DRM_TTM) are already =y above.
+CONFIG_DRM_PANTHOR=y
 
 # Backlight (built-in so panel can set brightness at boot)
 CONFIG_BACKLIGHT_CLASS_DEVICE=y
@@ -217,3 +227,43 @@ CONFIG_SPI=y
 CONFIG_SPI_MASTER=y
 CONFIG_SPI_MT65XX=y
 CONFIG_TOUCHSCREEN_SYNAPTICS_TCM_SPI=y
+
+# --- CPU features (IFUNC/SIGILL workaround) --------------------------------
+# The glibc IFUNC dispatchers select SVE-optimized code paths based on
+# HWCAP, but the mainline kernel does not properly set up CPACR_EL1.ZEN
+# for userspace SVE access on this SoC.  Disable SVE/SME in the kernel
+# so HWCAP bits are not advertised, preventing glibc from choosing those
+# code paths and crashing with SIGILL.
+CONFIG_ARM64_SVE=y
+CONFIG_ARM64_SME=y
+
+# --- CMA (Contiguous Memory Allocator) ------------------------------------
+# DRM dumb buffer allocation needs CMA.  Default is 32 MiB which is too
+# small for GNOME Shell triple-buffering on a 12800x2800 display.
+CONFIG_CMA_SIZE_MBYTES=256
+
+# --- CPU DVFS (mediatek-cpufreq-hw) ---------------------------------------
+# MT6991 uses the hardware-DVFS "performance domain" controller (one per
+# cluster); the driver reads the frequency LUT from the SoC and writes the
+# performance state back.  Built in so the CPU clusters get a cpufreq policy
+# at boot (there are no kernel modules on the rootfs).
+CONFIG_ARM_MEDIATEK_CPUFREQ_HW=y
+
+# --- IMU: Bosch BMI270/BMI260 accelerometer + gyroscope (I2C1) ------------
+# Built in (no modules on the rootfs).  BMI270_I2C selects the core and
+# REGMAP_I2C; IIO_TRIGGERED_BUFFER has to be built in as well.
+CONFIG_BMI270_I2C=y
+CONFIG_REGMAP_I2C=y
+CONFIG_IIO_BUFFER=y
+CONFIG_IIO_TRIGGERED_BUFFER=y
+
+# --- Thermal: MT6991 LVTS (vendor soc_temp_lvts port) ---------------------
+# The mainline lvts_thermal driver stops at MT8196; MT6991 uses the vendor
+# soc_temp_lvts driver whose calibration comes from the bootloader devinfo
+# NVMEM table (nvmem-mtk-devinfo).  All built in so the thermal zones exist
+# at boot.
+CONFIG_MTK_THERMAL=y
+CONFIG_MTK_SOC_THERMAL_LVTS=y
+CONFIG_NVMEM=y
+CONFIG_NVMEM_MTK_DEVINFO=y
+CONFIG_RESET_TI_SYSCON=y
