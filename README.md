@@ -9,7 +9,7 @@ aarch64)完成,无交叉工具链。历史/约束见文末。
 |---|---|
 | `arch/arm64/boot/dts/mediatek/mt6991*.dts*` | 板级/SoC DTS + 保留内存(提交进内核树) |
 | `arch/arm64/kernel/embedded-dtb.S` 等 | CONFIG_ARM64_EMBEDDED_DTB:把 DTB 用 .incbin 链进 Image |
-| `initramfs/` | **独立嵌套 git 仓库**,initramfs 源码(init.c)。不在主仓库版本控制内 |
+| `initramfs/` | **独立嵌套 git 仓库**:initramfs 源码(init.c 调试 init / init-rootfs.c rootfs 切换 init)、busybox、触摸 + mali(GPUEB CSF)固件。不在主仓库版本控制内 |
 | `out/` | kbuild O=out 全部产物(.config/Image/System.map/dtb,已 gitignore) |
 | `bt/` | pack_boot.sh 工作区:magiskboot + 原厂 boot.img + 成品(已 gitignore) |
 | `build.sh` | 一次构建(5 步,见下) |
@@ -20,13 +20,15 @@ aarch64)完成,无交叉工具链。历史/约束见文末。
 ## 一次构建
 
 ```sh
-# 1) init.c 必须前台编译过(后台链会吞错误):
-gcc -static -O2 -Wall -Wextra -o initramfs/init initramfs/init.c
+# 1) init 必须前台编译过(后台链会吞错误)。默认编 rootfs 切换 init:
+gcc -static -O2 -Wall -Wextra -o initramfs/init initramfs/init-rootfs.c
+#    调试 init(gcc 换成 init.c),或直接 INIT_SRC=init.c ./build.sh
 # 2) 后台构建:
 nohup ./build.sh > out/build.log 2>&1 &   # 产物:out/arch/arm64/boot/Image
 ```
 
-build.sh 步骤:[1/5] 静态 init → [2/5] cpio_list → [3/5] merge_config + 13 项
+build.sh 步骤:[1/5] 静态 init(INIT_SRC,默认 init-rootfs.c)→ [2/5]
+cpio_list(含 busybox + mali CSF 固件)→ [3/5] merge_config + 17 项
 CONFIG 校验 → [4/5] 只编本板 DTB → [5/5] Image + **内嵌 DTB 字节级比对**
 (System.map 符号定位 dd 出来与产物 dtb cmp)。
 
@@ -54,8 +56,8 @@ magiskboot 流程:unpack 原厂 boot.img → 换 kernel → repack → 再 unpac
 - 约束(不得违反):
   - 打包只用 `bt/magiskboot`;别处任何 bootimg.py 都是废件,禁用。
   - 永不修改内核 ext4 相关源码(用户态 init 解决)。
-  - init.c 任何改动先前台 gcc 编译过再后台跑 build.sh。
+  - init 任何改动先前台 gcc 编译过再后台跑 build.sh。
   - 日志采集 = 硬重启 ring capture(pstore_report + 40s panic → 重启后
     Android 侧读 console-ramoops-0);sdc5 pstore-stash 方案已废弃,不复用。
-  - 内核 ext4/initramfs 的 CONFIG 基线见 rmx6688.fragment,build.sh 里 13 项
+  - 内核 ext4/initramfs 的 CONFIG 基线见 rmx6688.fragment,build.sh 里 17 项
     校验防回归。

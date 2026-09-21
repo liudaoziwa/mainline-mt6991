@@ -13,9 +13,9 @@
 # ramdisk, so the kernel is self-contained and does not depend on whatever
 # ramdisk the boot image happens to carry.
 #
-# Foreground note: step [1/5] compiles initramfs/init.c. When running this
-# script in the background, run that gcc line by hand first so a compile
-# error is not swallowed by the background chain.
+# Foreground note: step [1/5] compiles the init. When running this script in
+# the background, run that gcc line by hand first so a compile error is not
+# swallowed by the background chain.
 set -euo pipefail
 
 K=$(cd "$(dirname "$0")" && pwd)   # repo root = linux-7.2.3 kernel tree
@@ -31,7 +31,11 @@ mkdir -p "$OUT"
 cd "$K"
 
 echo "==> [1/5] static init"
-gcc -static -O2 -Wall -Wextra -o "$IRFS/init" "$IRFS/init.c"
+# INIT_SRC picks the init source.  Default init-rootfs.c is the minimal
+# rootfs-switch init; INIT_SRC=init.c builds the bring-up test init (the
+# display/touch register tests, then a reboot to Android).
+INIT_SRC=${INIT_SRC:-init-rootfs.c}
+gcc -static -O2 -Wall -Wextra -o "$IRFS/init" "$IRFS/$INIT_SRC"
 strip "$IRFS/init"
 ls -la "$IRFS/init"
 
@@ -45,6 +49,8 @@ nod /dev/null 0666 0 0 c 1 3
 nod /dev/kmsg 0644 0 0 c 1 11
 dir /proc 0755 0 0
 dir /sys 0755 0 0
+dir /bin 0755 0 0
+file /bin/busybox $IRFS/busybox 0755 0 0
 dir /lib 0755 0 0
 dir /lib/firmware 0755 0 0
 dir /lib/firmware/tp 0755 0 0
@@ -53,6 +59,10 @@ file /lib/firmware/tp/24618/FW_S3910_TIANMA_HBP.img $IRFS/firmware/tp/24618/FW_S
 file /lib/firmware/tp/24618/FW_S3910_TIANMA_HBP_FAE.img $IRFS/firmware/tp/24618/FW_S3910_TIANMA_HBP_FAE.img 0644 0 0
 file /lib/firmware/tp/24618/LIMIT_S3910_TIANMA_HBP.img $IRFS/firmware/tp/24618/LIMIT_S3910_TIANMA_HBP.img 0644 0 0
 file /lib/firmware/tp/24618/LIMIT_S3910_TIANMA_HBP_AGING.img $IRFS/firmware/tp/24618/LIMIT_S3910_TIANMA_HBP_AGING.img 0644 0 0
+dir /lib/firmware/arm 0755 0 0
+dir /lib/firmware/arm/mali 0755 0 0
+dir /lib/firmware/arm/mali/arch13.8 0755 0 0
+file /lib/firmware/arm/mali/arch13.8/mali_csffw.bin $IRFS/firmware/arm/mali/arch13.8/mali_csffw.bin 0644 0 0
 file /init $IRFS/init 0755 0 0
 EOF
 cat "$IRFS/cpio_list"
@@ -72,7 +82,9 @@ for o in CONFIG_FB=y CONFIG_FB_SIMPLE=y CONFIG_FRAMEBUFFER_CONSOLE=y \
 	 CONFIG_MEDIATEK_WATCHDOG=y CONFIG_PSTORE_RAM=y CONFIG_PSTORE_CONSOLE=y \
 	 CONFIG_CMDLINE_FORCE=y CONFIG_SERIAL_8250_MT6577=y \
 	 CONFIG_BLK_DEV_INITRD=y CONFIG_LOGO=y \
-	 CONFIG_ARM64_EMBEDDED_DTB=y CONFIG_INITRAMFS_FORCE=y; do
+	 CONFIG_ARM64_EMBEDDED_DTB=y CONFIG_INITRAMFS_FORCE=y \
+	 CONFIG_DRM_MEDIATEK=y CONFIG_MTK_MMSYS=y CONFIG_MTK_CMDQ=y \
+	 CONFIG_DRM_PANEL_AE031_DSI_VDO=y; do
 	if grep -qx "$o" "$OUT/.config"; then
 		echo "  ok      $o"
 	else
