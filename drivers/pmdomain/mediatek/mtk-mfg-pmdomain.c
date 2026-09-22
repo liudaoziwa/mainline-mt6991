@@ -21,6 +21,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_opp.h>
+#include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/units.h>
 
@@ -694,6 +695,18 @@ static int mtk_mfg_attach_dev(struct generic_pm_domain *pd, struct device *dev)
 		}
 		prev_o = o;
 	}
+
+	/*
+	 * MT6991: keep the MFG power domain always on.  The GPUEB (always-on
+	 * MCU) owns the GPU's power states; gating the domain through runtime
+	 * PM makes the genpd power on/off the domain on every idle->active
+	 * transition (a full GPUEB handshake each time).  Under load that
+	 * cycles ~once per second and leaves the GPU/GPUEB in a bad state that
+	 * hangs with no fault -> watchdog reboot.  Forbid runtime PM on the
+	 * attached device (the GPU) so the domain is never powered off.  This
+	 * matches the vendor model where power management stays with the GPUEB.
+	 */
+	pm_runtime_forbid(dev);
 
 	return 0;
 }
