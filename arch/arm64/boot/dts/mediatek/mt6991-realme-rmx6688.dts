@@ -312,6 +312,18 @@
 	clock-frequency = <400000>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_i2c0>;
+
+	/*
+	 * Battery fuel gauge: TI bq27541 @ 0x55 (matches the i2c-0 0-0055
+	 * device the vendor kernel enumerates).  The bq27xxx driver is built
+	 * in; this node gives battery voltage/capacity/current/temp to
+	 * userspace via the power_supply class.
+	 */
+	battery@55 {
+		compatible = "ti,bq27541";
+		reg = <0x55>;
+		status = "okay";
+	};
 };
 
 /*
