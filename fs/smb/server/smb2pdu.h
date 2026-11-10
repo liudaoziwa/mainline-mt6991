@@ -93,6 +93,21 @@ struct preauth_integrity_info {
 				 SMB2_CRTCTX_AAPL_SUPPORTS_OSX_COPYFILE | \
 				 SMB2_CRTCTX_AAPL_SUPPORTS_READ_DIR_ATTR)
 
+/*
+ * READDIR_ATTR_V2 (SMB2_CRTCTX_AAPL_SUPPORTS_READ_DIR_ATTR_V2, see
+ * fs/smb/common/smb2pdu.h) extends the same inline-FinderInfo mechanism
+ * above with a flags field, confirmed byte-identical to V1 otherwise
+ * against AAPL's actual public client behavior. When a client's own
+ * client_caps requests V2, the server advertises V2 instead of V1 in
+ * its own server_caps reply; V1 and V2 are mutually exclusive on the
+ * wire, not both set together. The wire format's ShortNameLength+Reserved
+ * (ignored in V1) become a single flags field in V2 --
+ * AAPL_READDIR_ATTR_V2_NO_XATTR is the only flag bit currently defined,
+ * signaling the item has no xattrs/streams so the client can skip a
+ * separate query.
+ */
+#define AAPL_READDIR_ATTR_V2_NO_XATTR	0x01
+
 /* Model string: up to 31 ASCII chars */
 #define AAPL_MODEL_MAX_CHARS	31
 #define AAPL_MODEL_UTF16_BYTES	(AAPL_MODEL_MAX_CHARS * 2)
@@ -257,6 +272,13 @@ struct smb2_file_stream_info {
 	char   StreamName[];
 } __packed;
 
+struct srv_snapshot_array {
+	__le32 NumberOfSnapShots;
+	__le32 NumberOfSnapShotsReturned;
+	__le32 SnapShotArraySize;
+	__le32 Reserved;
+} __packed;
+
 struct smb2_file_standard_info {
 	__le64 AllocationSize;
 	__le64 EndOfFile;
@@ -398,6 +420,7 @@ struct channel *lookup_chann_list(struct ksmbd_session *sess,
 void smb3_preauth_hash_rsp(struct ksmbd_work *work);
 bool smb3_is_transform_hdr(void *buf);
 int smb3_decrypt_req(struct ksmbd_work *work);
+int ksmbd_check_transform_session(struct ksmbd_work *work, u64 tr_sess_id);
 int smb3_encrypt_resp(struct ksmbd_work *work);
 bool smb3_11_final_sess_setup_resp(struct ksmbd_work *work);
 int smb2_set_rsp_credits(struct ksmbd_work *work);

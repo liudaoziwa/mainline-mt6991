@@ -24,6 +24,8 @@
 #include "auth.h"
 #include "stats.h"
 #include "compress.h"
+#include "mgmt/share_config.h"
+#include "mgmt/tree_connect.h"
 
 int ksmbd_debug_types;
 
@@ -185,6 +187,16 @@ static void __handle_ksmbd_work(struct ksmbd_work *work,
 
 	if (conn->ops->is_transform_hdr &&
 	    conn->ops->is_transform_hdr(work->request_buf)) {
+		u64 tr_sess_id;
+
+		if (get_rfc1002_len(work->request_buf) <
+		    sizeof(struct smb2_transform_hdr)) {
+			ksmbd_conn_abort(conn);
+			return;
+		}
+		tr_sess_id = le64_to_cpu(((struct smb2_transform_hdr *)
+				smb_get_msg(work->request_buf))->SessionId);
+
 		rc = conn->ops->decrypt_req(work);
 		if (rc < 0) {
 			ksmbd_conn_abort(conn);
@@ -210,6 +222,12 @@ static void __handle_ksmbd_work(struct ksmbd_work *work,
 		if (((struct smb2_hdr *)smb_get_msg(work->request_buf))->ProtocolId !=
 			SMB2_PROTO_NUMBER ||
 		    get_rfc1002_len(work->request_buf) < sizeof(struct smb2_pdu)) {
+			ksmbd_conn_abort(conn);
+			return;
+		}
+
+		rc = ksmbd_check_transform_session(work, tr_sess_id);
+		if (rc < 0) {
 			ksmbd_conn_abort(conn);
 			return;
 		}
@@ -258,6 +276,15 @@ static void __handle_ksmbd_work(struct ksmbd_work *work,
 					else
 						conn->ops->set_rsp_status(work,
 							STATUS_NETWORK_NAME_DELETED);
+					goto send;
+				}
+
+				if (work->tcon &&
+				    test_share_config_flag(work->tcon->share_conf,
+							   KSMBD_SHARE_FLAG_ENCRYPT_DATA) &&
+				    !work->encrypted) {
+					conn->ops->set_rsp_status(work,
+								  STATUS_ACCESS_DENIED);
 					goto send;
 				}
 			}
@@ -445,6 +472,8 @@ static int server_conf_init(void)
 				KSMBD_AUTH_MSKRB5;
 #endif
 	server_conf.max_inflight_req = SMB2_MAX_CREDITS;
+	server_conf.max_sessions_per_connection =
+		KSMBD_DEFAULT_MAX_SESSIONS_PER_CONNECTION;
 	return 0;
 }
 
@@ -625,11 +654,16 @@ static int ksmbd_server_shutdown(void)
 {
 	WRITE_ONCE(server_conf.state, SERVER_STATE_SHUTTING_DOWN);
 
-	ksmbd_proc_cleanup();
 	class_unregister(&ksmbd_control_class);
 	ksmbd_workqueue_destroy();
 	ksmbd_ipc_release();
 	ksmbd_conn_transport_destroy();
+	/*
+	 * ksmbd_conn_transport_destroy() calls delete_proc_clients() and destroys
+	 * sessions. ksmbd_session_destroy() removes each session's proc entry.
+	 * Keep the procfs tree alive until these entries have been removed.
+	 */
+	ksmbd_proc_cleanup();
 	ksmbd_crypto_destroy();
 	ksmbd_free_global_file_table();
 	destroy_lease_table(NULL);

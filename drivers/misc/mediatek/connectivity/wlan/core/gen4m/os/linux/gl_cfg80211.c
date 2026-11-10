@@ -2132,7 +2132,7 @@ int mtk_cfg80211_external_auth(struct wiphy *wiphy,
 int mtk_cfg80211_tx_control_port(struct wiphy *wiphy, struct net_device *dev,
 				 const u8 *buf, size_t len,
 				 const u8 *dest, __be16 proto, bool unencrypted,
-				 int link_id, u64 *cookie)
+				 int link_id, u64 cookie)
 {
 	struct GLUE_INFO *prGlueInfo = NULL;
 	struct mt66xx_chip_info *prChipInfo;
@@ -2226,7 +2226,7 @@ int mtk_cfg80211_tx_control_port(struct wiphy *wiphy, struct net_device *dev,
 	skb_set_queue_mapping(prSkb, u2QueIdx);
 
 	GLUE_SET_PKT_TX_COOKIE(prSkb, (uint32_t)prGlueInfo->u8Cookie++);
-	*cookie = (uint64_t)GLUE_GET_PKT_TX_COOKIE(prSkb);
+	cookie = (uint64_t)GLUE_GET_PKT_TX_COOKIE(prSkb);
 	GLUE_SET_PKT_CONTROL_PORT_TX(prSkb);
 
 	DBGLOG(REQ, INFO,
@@ -2234,7 +2234,7 @@ int mtk_cfg80211_tx_control_port(struct wiphy *wiphy, struct net_device *dev,
 		" proto=0x%x unencrypted=%d link_id=%d cookie=0x%llx\n",
 		dev->name, ucBssIndex, MAC2STR(prEthHdr->h_dest),
 		MAC2STR(prEthHdr->h_source), proto, unencrypted,
-		link_id, *cookie);
+		link_id, cookie);
 	DBGLOG_MEM8(REQ, LOUD, buf, len);
 
 	kalHardStartXmit(prSkb, dev, prGlueInfo, ucBssIndex);
@@ -8586,7 +8586,7 @@ int mtk_cfg_cancel_remain_on_channel(struct wiphy *wiphy,
 #if KERNEL_VERSION(3, 14, 0) <= CFG80211_VERSION_CODE
 int mtk_cfg_mgmt_tx(struct wiphy *wiphy,
 		    struct wireless_dev *wdev,
-		    struct cfg80211_mgmt_tx_params *params, u64 *cookie)
+		    struct cfg80211_mgmt_tx_params *params, u64 cookie)
 #else
 int mtk_cfg_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 		struct ieee80211_channel *channel, bool offchan,
@@ -8608,10 +8608,10 @@ int mtk_cfg_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 #if CFG_ENABLE_WIFI_DIRECT && CFG_ENABLE_WIFI_DIRECT_CFG_80211
 	if (mtk_IsP2PNetDevice(prGlueInfo, wdev->netdev) > 0)
 		return mtk_p2p_cfg80211_mgmt_tx(wiphy, wdev, params,
-						cookie);
+						&cookie);
 #endif
 	/* STA Mode */
-	return mtk_cfg80211_mgmt_tx(wiphy, wdev, params, cookie);
+	return mtk_cfg80211_mgmt_tx(wiphy, wdev, params, &cookie);
 #else /* KERNEL_VERSION(3, 14, 0) > CFG80211_VERSION_CODE */
 #if CFG_ENABLE_WIFI_DIRECT && CFG_ENABLE_WIFI_DIRECT_CFG_80211
 	if (mtk_IsP2PNetDevice(prGlueInfo, wdev->netdev) > 0) {

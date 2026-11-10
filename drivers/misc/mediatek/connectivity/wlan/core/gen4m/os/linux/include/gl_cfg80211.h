@@ -699,7 +699,7 @@ uint16_t cfg80211_get_non_wfa_vendor_ie(
 #if KERNEL_VERSION(3, 14, 0) <= CFG80211_VERSION_CODE
 int mtk_cfg_mgmt_tx(struct wiphy *wiphy,
 		    struct wireless_dev *wdev,
-		    struct cfg80211_mgmt_tx_params *params, u64 *cookie);
+		    struct cfg80211_mgmt_tx_params *params, u64 cookie);
 #else
 int mtk_cfg_mgmt_tx(struct wiphy *wiphy,
 		    struct wireless_dev *wdev,
@@ -824,7 +824,7 @@ int mtk_cfg80211_external_auth(struct wiphy *wiphy, struct net_device *dev,
 int mtk_cfg80211_tx_control_port(struct wiphy *wiphy, struct net_device *dev,
 				 const u8 *buf, size_t len,
 				 const u8 *dest, __be16 proto, bool unencrypted,
-				 int link_id, u64 *cookie);
+				 int link_id, u64 cookie);
 #endif
 
 int mtk_IsP2PNetDevice(struct GLUE_INFO *prGlueInfo,

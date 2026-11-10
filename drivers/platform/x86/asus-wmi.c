@@ -2088,6 +2088,18 @@ static void asus_wmi_led_exit(struct asus_wmi *asus)
 
 	if (asus->led_workqueue)
 		destroy_workqueue(asus->led_workqueue);
+
+	/*
+	 * kbd_led is registered lazily by kbd_led_work: now that the
+	 * workqueue is destroyed and asus_ref.asus is NULL, the work can
+	 * neither run nor be queued anymore, furthermore leaving it to
+	 * devres would run the unregister from devres_release_all(),
+	 * after .remove() returned and the struct asus_wmi embedding
+	 * kbd_led has been freed.
+	 */
+	if (asus->kbd_led_registered)
+		devm_led_classdev_unregister(&asus->platform_device->dev,
+					     &asus->kbd_led);
 }
 
 static int asus_wmi_led_init(struct asus_wmi *asus)
@@ -4072,6 +4084,30 @@ static int asus_wmi_custom_fan_curve_init(struct asus_wmi *asus)
 
 	return 0;
 }
+
+/*
+ * Returns true if at least one custom fan curve is active
+ *
+ * Used by asus-armoury to check if PPT writes will be accepted by the BIOS
+ * on models that require an active fan curve for TDP changes.
+ */
+bool asus_wmi_custom_fan_curve_is_enabled(void)
+{
+	struct fan_curve_data *curves;
+	struct asus_wmi *asus;
+
+	guard(spinlock_irqsave)(&asus_ref.lock);
+	asus = asus_ref.asus;
+	if (!asus)
+		return false;
+
+	curves = asus->custom_fan_curves;
+
+	return (asus->cpu_fan_curve_available && curves[FAN_CURVE_DEV_CPU].enabled) ||
+	       (asus->gpu_fan_curve_available && curves[FAN_CURVE_DEV_GPU].enabled) ||
+	       (asus->mid_fan_curve_available && curves[FAN_CURVE_DEV_MID].enabled);
+}
+EXPORT_SYMBOL_NS_GPL(asus_wmi_custom_fan_curve_is_enabled, "ASUS_WMI");
 
 /* Throttle thermal policy ****************************************************/
 static int throttle_thermal_policy_write(struct asus_wmi *asus)

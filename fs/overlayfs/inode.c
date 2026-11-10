@@ -26,9 +26,17 @@ int ovl_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 	bool full_copy_up = false;
 	struct dentry *upperdentry;
 
-	err = setattr_prepare(&nop_mnt_idmap, dentry, attr);
+	err = setattr_prepare(idmap, dentry, attr);
 	if (err)
 		return err;
+
+	/* Rebase ownership from the mount idmap into overlay id space. */
+	if (attr->ia_valid & ATTR_UID)
+		attr->ia_vfsuid = VFSUIDT_INIT(from_vfsuid(idmap,
+				i_user_ns(d_inode(dentry)), attr->ia_vfsuid));
+	if (attr->ia_valid & ATTR_GID)
+		attr->ia_vfsgid = VFSGIDT_INIT(from_vfsgid(idmap,
+				i_user_ns(d_inode(dentry)), attr->ia_vfsgid));
 
 	if (attr->ia_valid & ATTR_SIZE) {
 		/* Truncate should trigger data copy up as well */
@@ -172,6 +180,8 @@ int ovl_getattr(struct mnt_idmap *idmap, const struct path *path,
 	int fsid = 0;
 	int err;
 	bool metacopy_blocks = false;
+	vfsuid_t vfsuid;
+	vfsgid_t vfsgid;
 
 	metacopy_blocks = ovl_is_metacopy_dentry(dentry);
 
@@ -284,6 +294,12 @@ int ovl_getattr(struct mnt_idmap *idmap, const struct path *path,
 	if (!is_dir && ovl_test_flag(OVL_INDEX, d_inode(dentry)))
 		stat->nlink = dentry->d_inode->i_nlink;
 
+	/* Map ownership of the real inode through the overlay mount idmap. */
+	vfsuid = make_vfsuid(idmap, i_user_ns(inode), stat->uid);
+	vfsgid = make_vfsgid(idmap, i_user_ns(inode), stat->gid);
+	stat->uid = vfsuid_into_kuid(vfsuid);
+	stat->gid = vfsgid_into_kgid(vfsgid);
+
 	return err;
 }
 
@@ -306,7 +322,7 @@ int ovl_permission(struct mnt_idmap *idmap,
 	 * Check overlay inode with the creds of task and underlying inode
 	 * with creds of mounter
 	 */
-	err = generic_permission(&nop_mnt_idmap, inode, mask);
+	err = generic_permission(idmap, inode, mask);
 	if (err)
 		return err;
 
@@ -534,7 +550,7 @@ int ovl_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 		return -EOPNOTSUPP;
 	if (type == ACL_TYPE_DEFAULT && !S_ISDIR(inode->i_mode))
 		return acl ? -EACCES : 0;
-	if (!inode_owner_or_capable(&nop_mnt_idmap, inode))
+	if (!inode_owner_or_capable(idmap, inode))
 		return -EPERM;
 
 	/*
@@ -542,8 +558,8 @@ int ovl_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 	 * be done with mounter's capabilities and so that won't do it for us).
 	 */
 	if (unlikely(inode->i_mode & S_ISGID) && type == ACL_TYPE_ACCESS &&
-	    !in_group_p(inode->i_gid) &&
-	    !capable_wrt_inode_uidgid(&nop_mnt_idmap, inode, CAP_FSETID)) {
+	    !in_group_or_capable(idmap, inode,
+				 i_gid_into_vfsgid(idmap, inode))) {
 		struct iattr iattr = { .ia_valid = ATTR_KILL_SGID };
 
 		err = ovl_setattr(&nop_mnt_idmap, dentry, &iattr);
@@ -983,7 +999,7 @@ int ovl_set_nlink_lower(struct dentry *dentry)
 }
 
 unsigned int ovl_get_nlink(struct ovl_fs *ofs, struct dentry *lowerdentry,
-			   struct dentry *upperdentry,
+			   struct dentry *upperdentry, bool indexed,
 			   unsigned int fallback)
 {
 	int nlink_diff;
@@ -991,7 +1007,15 @@ unsigned int ovl_get_nlink(struct ovl_fs *ofs, struct dentry *lowerdentry,
 	char buf[13];
 	int err;
 
-	if (!lowerdentry || !upperdentry || d_inode(lowerdentry)->i_nlink == 1)
+	if (!lowerdentry || !upperdentry)
+		return fallback;
+
+	/*
+	 * A lower inode with one link is not indexed on copy up, unless all
+	 * files are indexed for NFS export.  If the caller found an index entry,
+	 * then the xattr holds the union nlink, whatever the lower nlink is.
+	 */
+	if (!indexed && d_inode(lowerdentry)->i_nlink == 1)
 		return fallback;
 
 	err = ovl_getxattr_upper(ofs, upperdentry, OVL_XATTR_NLINK,
@@ -1248,7 +1272,7 @@ struct inode *ovl_get_inode(struct super_block *sb,
 		/* Recalculate nlink for non-dir due to indexing */
 		if (!is_dir)
 			nlink = ovl_get_nlink(ofs, lowerdentry, upperdentry,
-					      nlink);
+					      oip->index, nlink);
 		set_nlink(inode, nlink);
 		ino = key->i_ino;
 	} else {
@@ -1263,7 +1287,7 @@ struct inode *ovl_get_inode(struct super_block *sb,
 	}
 	ovl_fill_inode(inode, realinode->i_mode, realinode->i_rdev);
 	ovl_inode_init(inode, oip, ino, fsid);
-	WARN_ON_ONCE(!!IS_CASEFOLDED(inode) != ofs->casefold);
+	WARN_ON_ONCE(is_dir && !!IS_CASEFOLDED(inode) != ofs->casefold);
 
 	if (upperdentry && ovl_is_impuredir(sb, upperdentry))
 		ovl_set_flag(OVL_IMPURE, inode);

@@ -537,6 +537,7 @@ void au0828_dvb_unregister(struct au0828_dev *dev)
 	if (dvb->frontend == NULL)
 		return;
 
+	timer_shutdown_sync(&dev->bulk_timeout);
 	cancel_work_sync(&dev->restart_streaming);
 
 	dvb_net_release(&dvb->net);
@@ -600,6 +601,7 @@ int au0828_dvb_register(struct au0828_dev *dev)
 				   &mxl5007t_hvr950q_config);
 		break;
 	case AU0828_BOARD_HAUPPAUGE_WOODBURY:
+	case AU0828_BOARD_MONOPRICE_106456:
 		dvb->frontend = dvb_attach(au8522_attach,
 				&hauppauge_woodbury_config,
 				&dev->i2c_adap);

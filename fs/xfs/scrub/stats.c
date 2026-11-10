@@ -29,6 +29,7 @@ struct xchk_scrub_stats {
 	uint32_t		incomplete;
 	uint32_t		warning;
 	uint32_t		retries;
+	uint32_t		runtime_errors;
 
 	/* repair stats */
 	uint32_t		repair_invocations;
@@ -110,7 +111,7 @@ xchk_stats_format(
 		spin_unlock(&css->css_lock);
 
 		ret = scnprintf(buf, remaining,
- "%s %u %u %u %u %u %u %u %u %u %llu %u %u %llu\n",
+ "%s %u %u %u %u %u %u %u %u %u %llu %u %u %llu %u\n",
 				name_map[i],
 				(unsigned int)fss.invocations,
 				(unsigned int)fss.clean,
@@ -124,7 +125,8 @@ xchk_stats_format(
 				(unsigned long long)fss.checktime_us,
 				(unsigned int)fss.repair_invocations,
 				(unsigned int)fss.repair_success,
-				(unsigned long long)fss.repairtime_us);
+				(unsigned long long)fss.repairtime_us,
+				(unsigned int)fss.runtime_errors);
 		if (ret <= 0)
 			break;
 
@@ -166,7 +168,8 @@ xchk_stats_estimate_bufsize(
 		ret += field_width + 1;
 	}
 
-	return ret;
+	/* null byte for scnprintf */
+	return ret + 1;
 }
 
 /* Clear all counters. */
@@ -207,13 +210,17 @@ xchk_stats_merge_one(
 	}
 
 	/* caller applies this same transformation after we return */
-	if (error == -EFSCORRUPTED || error == -EFSBADCRC)
+	if (error == -EFSCORRUPTED || error == -EFSBADCRC) {
 		sm_flags |= XFS_SCRUB_OFLAG_CORRUPT;
+		error = 0;
+	}
 
 	css = &cs->cs_stats[sm->sm_type];
 	spin_lock(&css->css_lock);
 	css->invocations++;
-	if (!(sm_flags & XFS_SCRUB_OFLAG_UNCLEAN))
+	if (error)
+		css->runtime_errors++;
+	else if (!(sm_flags & XFS_SCRUB_OFLAG_UNCLEAN))
 		css->clean++;
 	if (sm_flags & XFS_SCRUB_OFLAG_CORRUPT)
 		css->corrupt++;
@@ -294,6 +301,7 @@ out:
 }
 
 static const struct file_operations scrub_stats_fops = {
+	.owner			= THIS_MODULE,
 	.open			= simple_open,
 	.read			= xchk_scrub_stats_read,
 };
@@ -321,6 +329,7 @@ xchk_clear_scrub_stats_write(
 }
 
 static const struct file_operations clear_scrub_stats_fops = {
+	.owner			= THIS_MODULE,
 	.open			= simple_open,
 	.write			= xchk_clear_scrub_stats_write,
 };

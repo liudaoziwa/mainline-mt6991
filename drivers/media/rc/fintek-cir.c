@@ -340,6 +340,10 @@ static void fintek_get_rx_ir_data(struct fintek_dev *fintek, u8 rx_irqs)
 		sample = fintek_cir_reg_read(fintek, CIR_RX_DATA);
 		fit_dbg("%s: sample: 0x%02x", __func__, sample);
 
+		/* Process a full buffer before storing the next sample. */
+		if (fintek->pkts >= RX_BUF_LEN)
+			fintek_process_rx_ir_data(fintek);
+
 		fintek->buf[fintek->pkts] = sample;
 		fintek->pkts++;
 
@@ -642,8 +646,8 @@ static void fintek_shutdown(struct pnp_dev *pdev)
 }
 
 static const struct pnp_device_id fintek_ids[] = {
-	{ "FIT0002", 0 },   /* CIR */
-	{ "", 0 },
+	{ .id = "FIT0002" },   /* CIR */
+	{ }
 };
 
 static struct pnp_driver fintek_driver = {

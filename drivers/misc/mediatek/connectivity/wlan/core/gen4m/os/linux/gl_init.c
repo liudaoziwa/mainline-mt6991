@@ -1385,10 +1385,10 @@ static int mtk_cfg_del_station_wrap(struct wiphy *wiphy,
 static int mtk_cfg_remain_on_channel_wrap(struct wiphy *wiphy,
 					  struct wireless_dev *wdev,
 					  struct ieee80211_channel *chan,
-					  unsigned int duration, u64 *cookie,
+					  unsigned int duration, u64 cookie,
 					  const u8 *rx_addr)
 {
-	return mtk_cfg_remain_on_channel(wiphy, wdev, chan, duration, cookie);
+	return mtk_cfg_remain_on_channel(wiphy, wdev, chan, duration, &cookie);
 }
 
 static int mtk_cfg_start_radar_detection_wrap(struct wiphy *wiphy,

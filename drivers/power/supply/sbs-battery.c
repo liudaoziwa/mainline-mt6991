@@ -832,7 +832,7 @@ static int sbs_get_battery_serial_number(struct i2c_client *client,
 	if (ret < 0)
 		return ret;
 
-	sprintf(chip->serial, "%04x", ret);
+	sprintf(chip->serial, "%04x", (u16)ret);
 	val->strval = chip->serial;
 
 	return 0;
@@ -861,6 +861,14 @@ static int sbs_get_chemistry(struct sbs_info *chip,
 		chip->technology = POWER_SUPPLY_TECHNOLOGY_NiCd;
 	else if (!strncasecmp(chemistry, "NiMH", 4))
 		chip->technology = POWER_SUPPLY_TECHNOLOGY_NiMH;
+	else if (!strncasecmp(chemistry, "PbAc", 4))
+		chip->technology = POWER_SUPPLY_TECHNOLOGY_PbAc;
+	else if (!strncasecmp(chemistry, "NiZn", 4))
+		chip->technology = POWER_SUPPLY_TECHNOLOGY_NiZn;
+	else if (!strncasecmp(chemistry, "RAM", 3))
+		chip->technology = POWER_SUPPLY_TECHNOLOGY_RAM;
+	else if (!strncasecmp(chemistry, "ZnAr", 4))
+		chip->technology = POWER_SUPPLY_TECHNOLOGY_ZnAr;
 	else
 		chip->technology = POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
 
@@ -1060,6 +1068,13 @@ static void sbs_alert(struct i2c_client *client, enum i2c_alert_protocol prot,
 	sbs_supply_changed(i2c_get_clientdata(client));
 }
 
+static void sbs_disable_work(void *data)
+{
+	struct sbs_info *chip = data;
+
+	disable_delayed_work_sync(&chip->work);
+}
+
 static void sbs_external_power_changed(struct power_supply *psy)
 {
 	struct sbs_info *chip = power_supply_get_drvdata(psy);
@@ -1199,6 +1214,10 @@ static int sbs_probe(struct i2c_client *client)
 	if (IS_ERR(chip->power_supply))
 		return dev_err_probe(&client->dev, PTR_ERR(chip->power_supply),
 				     "Failed to register power supply\n");
+
+	rc = devm_add_action_or_reset(&client->dev, sbs_disable_work, chip);
+	if (rc)
+		return rc;
 
 	if (!chip->gpio_detect)
 		goto out;

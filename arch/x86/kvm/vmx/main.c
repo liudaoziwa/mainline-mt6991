@@ -10,6 +10,8 @@
 #include "tdx.h"
 #include "tdx_arch.h"
 
+#pragma GCC poison to_vmx
+
 #ifdef CONFIG_KVM_INTEL_TDX
 static_assert(offsetof(struct vcpu_vmx, vt) == offsetof(struct vcpu_tdx, vt));
 
@@ -140,12 +142,10 @@ static void vt_vcpu_put(struct kvm_vcpu *vcpu)
 	vmx_vcpu_put(vcpu);
 }
 
-static int vt_vcpu_pre_run(struct kvm_vcpu *vcpu)
+static bool vt_vcpu_needs_initialization(struct kvm_vcpu *vcpu)
 {
-	if (is_td_vcpu(vcpu))
-		return tdx_vcpu_pre_run(vcpu);
-
-	return vmx_vcpu_pre_run(vcpu);
+	return is_td_vcpu(vcpu) &&
+	       tdx_vcpu_needs_initialization(vcpu);
 }
 
 static fastpath_t vt_vcpu_run(struct kvm_vcpu *vcpu, u64 run_flags)
@@ -163,6 +163,16 @@ static int vt_handle_exit(struct kvm_vcpu *vcpu,
 		return tdx_handle_exit(vcpu, fastpath);
 
 	return vmx_handle_exit(vcpu, fastpath);
+}
+
+static bool vt_unhandleable_emulation_required(struct kvm_vcpu *vcpu)
+{
+	if (is_td_vcpu(vcpu)) {
+		WARN_ON_ONCE(to_vt(vcpu)->emulation_required);
+		return false;
+	}
+
+	return vmx_unhandleable_emulation_required(vcpu);
 }
 
 static int vt_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
@@ -593,6 +603,18 @@ static void vt_set_nmi_mask(struct kvm_vcpu *vcpu, bool masked)
 	vmx_set_nmi_mask(vcpu, masked);
 }
 
+static void vt_clear_hlt(struct kvm_vcpu *vcpu)
+{
+	/*
+	 * TDX doesn't support disabling HLT-exiting, and KVM can't access a
+	 * TD's VMCS, so there is never any hardware halted state to clear.
+	 */
+	if (is_td_vcpu(vcpu))
+		return;
+
+	vmx_clear_hlt(vcpu);
+}
+
 static void vt_enable_nmi_window(struct kvm_vcpu *vcpu)
 {
 	/* Refer to the comments in tdx_inject_nmi(). */
@@ -868,6 +890,17 @@ static int vt_gmem_max_mapping_level(struct kvm *kvm, kvm_pfn_t pfn,
 #define vt_op_tdx_only(name) NULL
 #endif /* CONFIG_KVM_INTEL_TDX */
 
+int vt_handle_bus_lock_vmexit(struct kvm_vcpu *vcpu)
+{
+	/*
+	 * Hardware may or may not set the BUS_LOCK_DETECTED flag on BUS_LOCK
+	 * VM-Exits. Unconditionally set the flag here and leave the handling
+	 * to .handle_exit() callback.
+	 */
+	to_vt(vcpu)->exit_reason.bus_lock_detected = true;
+	return 1;
+}
+
 #define VMX_REQUIRED_APICV_INHIBITS				\
 	(BIT(APICV_INHIBIT_REASON_DISABLED) |			\
 	 BIT(APICV_INHIBIT_REASON_ABSENT) |			\
@@ -939,11 +972,12 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.flush_tlb_gva = vt_op(flush_tlb_gva),
 	.flush_tlb_guest = vt_op(flush_tlb_guest),
 
-	.vcpu_pre_run = vt_op(vcpu_pre_run),
+	.vcpu_needs_initialization = vt_op_tdx_only(vcpu_needs_initialization),
 	.vcpu_run = vt_op(vcpu_run),
 	.handle_exit = vt_op(handle_exit),
 	.skip_emulated_instruction = vmx_skip_emulated_instruction,
 	.update_emulated_instruction = vmx_update_emulated_instruction,
+	.unhandleable_emulation_required = vt_op(unhandleable_emulation_required),
 	.set_interrupt_shadow = vt_op(set_interrupt_shadow),
 	.get_interrupt_shadow = vt_op(get_interrupt_shadow),
 	.patch_hypercall = vt_op(patch_hypercall),
@@ -955,6 +989,7 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.nmi_allowed = vt_op(nmi_allowed),
 	.get_nmi_mask = vt_op(get_nmi_mask),
 	.set_nmi_mask = vt_op(set_nmi_mask),
+	.clear_hlt = vt_op(clear_hlt),
 	.enable_nmi_window = vt_op(enable_nmi_window),
 	.enable_irq_window = vt_op(enable_irq_window),
 	.update_cr8_intercept = vt_op(update_cr8_intercept),
@@ -994,8 +1029,6 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.handle_exit_irqoff = vmx_handle_exit_irqoff,
 
 	.update_cpu_dirty_logging = vt_op(update_cpu_dirty_logging),
-
-	.nested_ops = &vmx_nested_ops,
 
 	.pi_update_irte = vmx_pi_update_irte,
 	.pi_start_bypass = vmx_pi_start_bypass,
@@ -1038,6 +1071,7 @@ struct kvm_x86_init_ops vt_init_ops __initdata = {
 
 	.runtime_ops = &vt_x86_ops,
 	.pmu_ops = &intel_pmu_ops,
+	.nested_ops = &vmx_nested_ops,
 };
 
 static void __exit vt_exit(void)
