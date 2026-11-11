@@ -540,3 +540,18 @@ CONFIG_SCSI=y
 # CONFIG_USB_EHCI_HCD is not set
 # CONFIG_USB_OHCI_HCD is not set
 # CONFIG_USB_XHCI_PCI is not set
+
+# --- WiFi hotspot NAT (nftables, IPv4) --------------------------------------
+# hostapd + dnsmasq + nft masquerade on uap0 -> wlan0.  Keep these as y so the
+# rules work before the Ubuntu rootfs has loaded any module.
+CONFIG_NETFILTER=y
+CONFIG_NETFILTER_ADVANCED=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NF_NAT=y
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NF_TABLES_IPV4=y
+CONFIG_NF_DEFRAG_IPV4=y
+CONFIG_NFT_CT=y
+CONFIG_NFT_NAT=y
+CONFIG_NFT_MASQ=y
