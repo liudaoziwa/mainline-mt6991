@@ -39,6 +39,7 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
@@ -319,14 +320,86 @@ static int pmic_early_cells(struct device *dev, struct device_node *np,
 	return 0;
 }
 
+/*
+ * Runtime SPMI poke, for bringing up rails that were not known when the
+ * board was described.  The boot sequences above are static DT lists;
+ * these two files let a developer read or write any PMIC register while
+ * the system is running, using the same bare SWINF path:
+ *
+ *   echo "5 0x1c23 0x01" > spmi_cmd    # write 0x01 to MT6373 0x1c23
+ *   echo "5 0x1c23"      > spmi_cmd    # read it into spmi_val
+ *   cat spmi_val                       # "0x01 0"
+ *
+ * A fourth cell is a mask for read-modify-write.  Writes are deliberately
+ * unrestricted: this is a bring-up aid, not a production interface.
+ */
+struct pmic_early_priv {
+	struct pmic_early_bus *bus;
+	struct mutex lock;
+	u32 last_val;
+	int last_err;
+};
+
+static ssize_t spmi_cmd_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct pmic_early_priv *priv = dev_get_drvdata(dev);
+	unsigned int sid, reg, val = 0, mask = 0;
+	u32 cur = 0;
+	int n, ret = 0;
+
+	n = sscanf(buf, "%i %i %i %i", &sid, &reg, &val, &mask);
+	if (n < 2)
+		return -EINVAL;
+	if (sid > 0xf || reg > 0xffff)
+		return -EINVAL;
+
+	mutex_lock(&priv->lock);
+	if (n == 2) {
+		ret = pmic_early_read(priv->bus, sid, reg, &priv->last_val);
+	} else {
+		if (n == 4) {
+			ret = pmic_early_read(priv->bus, sid, reg, &cur);
+			if (!ret)
+				val = (cur & ~mask) | (val & mask);
+		}
+		if (!ret)
+			ret = pmic_early_write(priv->bus, sid, reg,
+					       0xffffffff, val);
+	}
+	priv->last_err = ret;
+	mutex_unlock(&priv->lock);
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_WO(spmi_cmd);
+
+static ssize_t spmi_val_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	struct pmic_early_priv *priv = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "0x%02x %d\n", priv->last_val, priv->last_err);
+}
+static DEVICE_ATTR_RO(spmi_val);
+
+static struct attribute *pmic_early_attrs[] = {
+	&dev_attr_spmi_cmd.attr,
+	&dev_attr_spmi_val.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(pmic_early);
+
 static int mt6991_pmic_early_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node, *child;
 	struct pmic_early_bus *buses;
 	struct pmic_early_seq *seqs;
+	struct pmic_early_priv *priv;
 	int nbuses = 0, nseqs = 0, ret = 0;
 	unsigned int count;
+	int i;
 
 	count = of_get_child_count(np);
 	if (!count)
@@ -334,8 +407,10 @@ static int mt6991_pmic_early_probe(struct platform_device *pdev)
 
 	buses = devm_kcalloc(dev, count, sizeof(*buses), GFP_KERNEL);
 	seqs = devm_kcalloc(dev, count, sizeof(*seqs), GFP_KERNEL);
-	if (!buses || !seqs)
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!buses || !seqs || !priv)
 		return -ENOMEM;
+	mutex_init(&priv->lock);
 
 	for_each_available_child_of_node(np, child) {
 		if (!of_property_present(child, "reg"))
@@ -346,6 +421,19 @@ static int mt6991_pmic_early_probe(struct platform_device *pdev)
 			goto done;
 		}
 		nbuses++;
+	}
+
+	for (i = 0; i < nbuses; i++) {
+		if (buses[i].spmi) {
+			priv->bus = &buses[i];
+			break;
+		}
+	}
+	if (priv->bus) {
+		dev_set_drvdata(dev, priv);
+		ret = devm_device_add_group(dev, &pmic_early_group);
+		if (ret)
+			goto done;
 	}
 
 	for_each_available_child_of_node(np, child) {

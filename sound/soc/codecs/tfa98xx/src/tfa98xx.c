@@ -2387,6 +2387,19 @@ static int tfa98xx_startup(struct snd_pcm_substream *substream,
 		return 0;
 	}
 
+	/*
+	 * The vendor loads tfa98xx.cnt from the TFA98XX Load Firmware
+	 * mixer control, which Android's audio HAL writes.  There is no
+	 * such userspace here, so load it on the first PCM open; without
+	 * it hw_params cannot map 48 kHz to a container profile.
+	 */
+	if (g_tfa98xx_firmware_status == 0) {
+		struct snd_ctl_elem_value uctl = { };
+
+		uctl.value.integer.value[0] = 1;
+		tfa98xx_load_firmware(NULL, &uctl);
+	}
+
 	if (pcm_no_constraint != 0) {
 		pr_info("%s(), return 0 - pcm_no_constraint != 0\n", __func__);
 		return 0;
@@ -2971,6 +2984,7 @@ int tfa98xx_i2c_probe(struct i2c_client *i2c)
 	struct snd_soc_dai_driver *dai;
 	struct tfa98xx *tfa98xx;
 	struct device_node *np = i2c->dev.of_node;
+	char buf[32];
 	unsigned int reg;
 	int ret;
 
@@ -3041,6 +3055,12 @@ int tfa98xx_i2c_probe(struct i2c_client *i2c)
 			tfa98xx->flags |= TFA98XX_FLAG_CALIBRATION_CTL;
 			tfa98xx->flags |= TFA98XX_FLAG_REMOVE_PLOP_NOISE;
 			/* tfa98xx->flags |= TFA98XX_FLAG_LP_MODES;*/
+			tfa98xx->flags |= TFA98XX_FLAG_TDM_DEVICE;
+			break;
+		case 0x73: /* tfa9873 */
+			pr_info("TFA9873 detected\n");
+			tfa98xx->flags |= TFA98XX_FLAG_MULTI_MIC_INPUTS;
+			tfa98xx->flags |= TFA98XX_FLAG_CALIBRATION_CTL;
 			tfa98xx->flags |= TFA98XX_FLAG_TDM_DEVICE;
 			break;
 		case 0x74: /* tfa9874 */
@@ -3138,7 +3158,12 @@ int tfa98xx_i2c_probe(struct i2c_client *i2c)
 		dai,
 		ARRAY_SIZE(tfa98xx_dai));
 #endif
-	ret = dev_set_name(&i2c->dev, "tfa98xx");
+	/* Unique component name per amp: both devices otherwise register
+	 * the same control names into one card and the second probe fails
+	 * with -EBUSY.  Match the vendor's tfa98xx.<bus>-<addr> scheme. */
+	snprintf(buf, sizeof(buf), "tfa98xx.%x-%04x",
+		 i2c->adapter->nr, i2c->addr);
+	ret = dev_set_name(&i2c->dev, "%s", buf);
 	if (ret < 0) {
 		dev_err(&i2c->dev, "dev_set_name ret=: %d\n", ret);
 		return ret;

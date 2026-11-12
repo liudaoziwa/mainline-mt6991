@@ -926,6 +926,7 @@
 		compatible = "goodix,tfa9874";
 		reg = <0x34>;
 		#sound-dai-cells = <0>;
+		sound-name-prefix = "Left";
 		status = "okay";
 	};
 
@@ -933,6 +934,7 @@
 		compatible = "goodix,tfa9874";
 		reg = <0x35>;
 		#sound-dai-cells = <0>;
+		sound-name-prefix = "Right";
 		status = "okay";
 	};
 };
@@ -1129,6 +1131,34 @@
 		};
 	};
 
+	/*
+	 * AFE I2S4 pins: BCLK=GPIO95, LRCK=GPIO96, DIN=GPIO97 and the
+	 * speaker data output DOUT=GPIO98.  The mt8196 AFE's DAPM
+	 * pinctrl widget asks the afe device for the "aud-gpio-i2s4-*"
+	 * states, so they have to be listed on the afe node below.
+	 */
+	aud_gpio_i2s4_off: aud-gpio-i2s4-off-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO95__FUNC_GPIO95>,
+				 <PINMUX_GPIO96__FUNC_GPIO96>,
+				 <PINMUX_GPIO97__FUNC_GPIO97>,
+				 <PINMUX_GPIO98__FUNC_GPIO98>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_gpio_i2s4_on: aud-gpio-i2s4-on-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO95__FUNC_I2SIN4_BCK>,
+				 <PINMUX_GPIO96__FUNC_I2SIN4_LRCK>,
+				 <PINMUX_GPIO97__FUNC_I2SIN4_DATA0>,
+				 <PINMUX_GPIO98__FUNC_I2SOUT4_DATA0>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
 	/* Volume-down EINT on GPIO11, active-low (vendor "volume_down_as_int"). */
 	volume_down_pins: volume-down-pins {
 		pins_key {
@@ -1212,11 +1242,27 @@
  * the vendor FDT and match aud_clks_mt6991[] in mt8196-afe-clk.c.
  */
 / {
+	/*
+	 * Speaker card: two TFA9873 mono amps on i2c6, both fed from AFE
+	 * I2S output 4 (the vendor's spk-i2s-index 25/24 maps to
+	 * I2SOUT4/I2SIN4).  Their RESETN lines are MT6373 PIO1/PIO2 and
+	 * are pulsed by mt6991-pmic-early before i2c probe.
+	 */
+	sound_speaker: sound {
+		compatible = "realme,rmx6688-sound";
+		realme,codec-left = <&tfa98xx_l>;
+		realme,codec-right = <&tfa98xx_r>;
+		status = "okay";
+	};
+
 	afe: afe@1a110000 {
 		compatible = "mediatek,mt6991-afe";
 		reg = <0 0x1a110000 0 0x9000>;
 		interrupts = <GIC_SPI 351 IRQ_TYPE_LEVEL_HIGH 0>;
 		power-domains = <&scpsys MT6991_POWER_DOMAIN_AUDIO>;
+		pinctrl-names = "aud-gpio-i2s4-off", "aud-gpio-i2s4-on";
+		pinctrl-0 = <&aud_gpio_i2s4_off>;
+		pinctrl-1 = <&aud_gpio_i2s4_on>;
 
 		clocks = <&audiosys 0x71>, <&audiosys 0x73>,
 			 <&cksys 0x50>, <&cksys 0x51>, <&cksys 0x5c>,

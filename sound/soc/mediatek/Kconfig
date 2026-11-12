@@ -399,4 +399,14 @@ config SND_SOC_MT8196_NAU8825
 	  Select Y if you have such device.
 	  If unsure select "N".
 
+config SND_SOC_MT8196_RMX6688
+	tristate "ASoC Audio driver for realme RMX6688 (MT6991) speakers"
+	depends on SND_SOC_MT8196
+	depends on SND_SOC_TFA9874
+	help
+	  This adds the ASoC machine driver for the two NXP TFA9873
+	  speaker amplifiers on realme GT7 (RMX6688/MT6991).  The amps
+	  are fed from AFE I2S output 4; their reset lines are handled by
+	  mt6991-pmic-early.
+
 endmenu

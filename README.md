@@ -18,7 +18,7 @@
 | Connectivity 电源栈 | connv3/conninfra、connfem(FEM)、NVRAM 加载、自动上电 |
 | 电池电量计 | TI bq27541 @ i2c0 0x55;`/sys/class/power_supply/` 暴露容量/电压/电流/温度,GNOME 显示电量。只读。**i2c0 必须 100kHz**(400kHz 会超时读不到) |
 | 充电 (5V 标准) | MT6379(SPMI USID 0x0e):内核驱动(SPMI 控制器 + `mt6379_charger`)把 `AICR`/`ICHG` 提到 3A 并每 3s 轮询重设(抗拔插)。实测 `Charging` ~2.6A;**厂商快充(VOOC)未做** |
-| PMIC 栈 | mt6363/mt6373/mt6368/mt6369 四颗全部 `pmic_mng_register_device ok`;connv3 PMIC(mt6373)注册成功;MT6379 eUSB2 repeater probe+power on。主线无 MTK PMIC MFD ⇒ 触摸 VTP 已由内核 `mt6991-pmic-early`(DT 序列 + bare SWINF,subsys_initcall)接管;MD vbuck4/5/6 仍走 init `md_rails_up()` 裸 SPMI(带回读 guard);MT6373 PIO1/2/VAUD18 + GPIO 复位(codec-en GPIO9)由 pmic-early 早期序列先行,init 侧保留 |
+| PMIC 栈 | mt6363/mt6373/mt6368/mt6369 四颗全部 `pmic_mng_register_device ok`;connv3 PMIC(mt6373)注册成功;MT6379 eUSB2 repeater probe+power on。主线无 MTK PMIC MFD ⇒ 触摸 VTP 已由内核 `mt6991-pmic-early`(DT 序列 + bare SWINF,subsys_initcall)接管;MT6363 三轨 `md-rails` 已由同一个 pmic-early 的 DT 子节点接管(b42 验证 `already in the target state`,init 副本已删);MT6373 PIO1/2/VAUD18 + GPIO 复位(codec-en GPIO9)由 pmic-early 早期序列接管,init 副本已删(2026-10-17) |
 | 按键 (电源/音量) | 电源=MT6363 PWRKEY、音量上=MT6363 HOMEKEY(`mt6363-spmi-keys` 轮询 `TOPSTATUS`,因 MT6991 SPMI 无 IRQ domain);音量下=`gpio-keys` GPIO11。实机可用 |
 | SCP (RV33 tinysys) | 以模块形式跑:`scp.ko` / `ccci_fsm_scp.ko`(AP 侧 CCISM)/ `connscp.ko` / `clk-mt6991-drv.ko` / `sensorhub_probe.ko`。`SCP READY` + `freq=190`(DVFS 工作)、ULPOSC cali 通过、AP↔SCP IPI/CCISM 双向通;`scp_ap_ready` sysfs + init `wait_scp_ready()` 保证 modem 在 SCP 完全就绪后再启动 |
 | 基带 / Modem (M80) | CCCI/eccci 全量内建 + port_tty.c 给出**真 AT tty `/dev/ttyCCCI0`**;ch14 FS 由内核 `port_fs_reply()` 全量应答(§CCCI_FS_RE_HANDOFF),RPC `0x400F`/`0x4010`/`0x4014` 已内核实现;mdota(901 文件 8.6MB)以 `port_char_mdata` 编进内核。实测 `md_state 0→2→3→4 READY`(25–28 s),长时间零 EE / 零 `-1001`;ModemManager(`mtk-soc` 插件)控制面已通 |
@@ -35,11 +35,11 @@
 | 数据面(上网) | ModemManager 控制面(握手/注册/APN profile/`mobile_data`)已通,modem 也已注册在 5G NR(`+C5GREG: 0,1`;`AT+CGDCONT?` 裸 `OK` = AP 从未配过 APN);但 `DATA_ACT` 被 modem 本地拒(`D2CPM_INVAL_ARG/NOT_PERM/NW_UNKNOWN`),`AT+CGACT=1,0` 报同一个 cause ⇒ 门槛在 modem 侧状态、与 MIPC payload 无关。缺 RIL 等价物给 ccmni 配地址 |
 | 系统 suspend/resume | 电源域下电会丢 bootloader 状态(MIPI TX PHY、blender 链、SMMU、唤醒源均未自包含) |
 | 快充 VOOC/SuperVOOC | 需电荷泵 `mt6379_2p`(i2c3 0x53)+专有协议+OPPO 框架;当前仅 5V 标准充电 |
-| GPS | `gps/` 已编为 `gps_drv_dl_v062.ko` 模块并进 initramfs,connv3→connscp→SCP 链路可用(`mt6685 ok`、GDL 控制线程起);缺厂商 userspace(MNLD)与 DTS/EMI 节点 |
+| GPS | **内核侧 100% 打通**(`gps_drv_dl_v062` + DTS `gps@40c00000` + connv2 上电 WDT 修复;chipid/MCU/GDL 链路全通);卡在厂商 userspace(`mnld` 依赖 Android binder)。详见 `doc/GPS_PORT_NOTES.md` |
 | 冷启动无 LK 显示 | 依赖 bootloader 显示的中间级(PHY/mutex/blender)尚未由主线完整接管 |
-| 10-bit / HDR scanout | 已试,不可行:厂商 OVL 只支持 ABGR/XBGR2101010,GNOME/mutter 只用 XRGB2101010(厂商未实现),且下游是 bootloader 的 8-bit |
+| 10-bit / HDR scanout | **2026-10-18 实测可行、暂不采用**:XR30 编码 `0x20102` 能正确显示;残余朦胧来自下游 8bpp 量化,桌面收益≈0,默认保持 8-bit。详见 `doc/DISPLAY_COLOR_NOTES.md` |
 | MT6373/MT6363 PMIC 驱动 | 卡在主线 PMIF 的 EXT_REG_LONG(16-bit 长地址)超时 ⇒ 完整 regulator 驱动未启用;触摸 AVDD 由内核 `mt6991-pmic-early`(DT 序列,bare SWINF)接管,其它上电仍走 raw SPMI/寄存器 |
-| 音频 / 扬声器 | AFE/音频时钟/电源域、NXP `tfa98xx` + `mtk-sp-spk-amp`、`tfa98xx.cnt` 均已就绪;**卡在扬声器功放 TFA9873 的供电轨**(i2c6 0x34/0x35 复位已做但仍 NAK);该轨软件不可见,需原理图/实测 |
+| 音频 / 扬声器 | ✅ **已出声**:TFA9873×2(i2c6 0x34/0x35)+ AFE `I2SOUT4`。根因是 MT6991 i2c 的 `SLAVE_ADDR1=0x94`(mainline 误写 0x04,导致所有 i2c6 器件 NAK);已补 9873 支持、DPCM `DL1` FE→`I2SOUT4` BE、BE startup 自动打开 `AFE_CONN026/027` 的 `DL1` 连接;`pw-play` 440Hz 实机正常 |
 
 ## 布局
 
@@ -49,9 +49,8 @@
 | `arch/arm64/kernel/embedded-dtb.S` 等 | CONFIG_ARM64_EMBEDDED_DTB:把 DTB 用 .incbin 链进 Image |
 | `initramfs/` | **独立嵌套 git 仓库**:initramfs 源码(init.c 调试 init / init-rootfs.c rootfs 切换 init)以及 `firmware/`(触摸 + mali CSF + MT6653 WiFi/BT 固件/NVRAM + conninfra/connfem cfg + tfa98xx.cnt + md1drdi.bin)——固件与 init 源码必须在嵌套仓库里,否则本仓库构建的镜像会缺固件/缺 init。`init` 与 `cpio_list` 是生成物,已被 .gitignore |
 | `out/` | kbuild O=out 全部产物(.config/Image/System.map/dtb,已 gitignore) |
-| `bt/` | pack_boot.sh 工作区:magiskboot + 原厂 boot.img + 成品(已 gitignore) |
-| `build.sh` | 一次构建(6 步,见下) |
-| `pack_boot.sh` | 把 out 的 Image 打包成可刷 boot.img(magiskboot 往返校验) |
+| `build.sh` | 一次构建(6 步,见下;`O=out`,构建 loadable modules + 静态 init 后链进 Image) |
+| `../bt/`(工作区根) | `magiskboot` + 原厂 `boot.img`;成品 `boot-new.img` 生成在工作区根(`/root/mainline/boot-new.img`),用两条 magiskboot 命令打包 |
 | `rmx6688.fragment` | defconfig 之上合并的 Kconfig 增量 |
 | `gen_resmem.py` / `verify_dtb.py` / `fdt` | resmem dtsi 的生成/核对工具 + 原厂 FDT |
 | 仓库根 `*.ko` | 模块构建的缓存位置(build.sh 从树内 find 后 cp 过来再嵌进 initramfs);`.ko` 不入库 |
@@ -59,6 +58,8 @@
 ## 一次构建
 
 ```sh
+# 默认 INIT_SRC=init-rootfs.c（切 Ubuntu rootfs）；INIT_SRC=init.c 为 bring-up 测试 init
+./build.sh
 # 内核工具链默认 clang/LLVM/lld(kbuild LLVM=1);TOOLCHAIN=gcc ./build.sh
 # 整体切回 gcc/binutils,LLVM=-<N> 可钉某个 clang 版本(如 LLVM=-18)。
 #    glibc:用仓内 minic(initramfs/minic/,手写最小 libc)。与 build.sh [1/6] 等价:

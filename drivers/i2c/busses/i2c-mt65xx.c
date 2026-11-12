@@ -36,6 +36,18 @@
 #define I2C_RS_MUL_CNFG			(1 << 15)
 #define I2C_RS_MUL_TRIG			(1 << 14)
 #define I2C_DCM_DISABLE			0x0000
+/*
+ * MT6991 (and several other recent MTK SoCs) moved the slave-address
+ * register from 0x04 to 0x94.  Writing the address to the old offset
+ * leaves the controller transmitting address 0x00, so every device NACKs
+ * even though the bus/pads/power are fine.  The vendor driver selects it
+ * with a per-SoC "slave_addr_ver" flag; keep that flag and add a runtime
+ * override for testing (-1 = use the compat table, 0 = old register,
+ * 1 = new register).
+ */
+static int force_slave_addr1 = -1;
+module_param(force_slave_addr1, int, 0644);
+
 #define I2C_IO_CONFIG_OPEN_DRAIN	0x0003
 #define I2C_IO_CONFIG_PUSH_PULL		0x0000
 #define I2C_SOFT_RST			0x0001
@@ -146,6 +158,7 @@ enum I2C_REGS_OFFSET {
 	OFFSET_INTR_MASK,
 	OFFSET_INTR_STAT,
 	OFFSET_CONTROL,
+	OFFSET_SLAVE_ADDR1,
 	OFFSET_TRANSFER_LEN,
 	OFFSET_TRANSAC_LEN,
 	OFFSET_DELAY_LEN,
@@ -178,6 +191,7 @@ enum I2C_REGS_OFFSET {
 static const u16 mt_i2c_regs_v1[] = {
 	[OFFSET_DATA_PORT] = 0x0,
 	[OFFSET_SLAVE_ADDR] = 0x4,
+	[OFFSET_SLAVE_ADDR1] = 0x94,
 	[OFFSET_INTR_MASK] = 0x8,
 	[OFFSET_INTR_STAT] = 0xc,
 	[OFFSET_CONTROL] = 0x10,
@@ -211,6 +225,7 @@ static const u16 mt_i2c_regs_v1[] = {
 static const u16 mt_i2c_regs_v2[] = {
 	[OFFSET_DATA_PORT] = 0x0,
 	[OFFSET_SLAVE_ADDR] = 0x4,
+	[OFFSET_SLAVE_ADDR1] = 0x94,
 	[OFFSET_INTR_MASK] = 0x8,
 	[OFFSET_INTR_STAT] = 0xc,
 	[OFFSET_CONTROL] = 0x10,
@@ -278,6 +293,7 @@ struct mtk_i2c_compatible {
 	unsigned char ltiming_adjust: 1;
 	unsigned char apdma_sync: 1;
 	unsigned char speed_ver: 1;
+	unsigned char slave_addr_ver;
 	unsigned char max_dma_support;
 };
 
@@ -556,6 +572,7 @@ static const struct mtk_i2c_compatible mt6991_compat = {
 	.ltiming_adjust = 1,
 	.apdma_sync = 1,
 	.speed_ver = 1,
+	.slave_addr_ver = 1,	/* MT6991 uses SLAVE_ADDR1 (0x94) */
 	.max_dma_support = 36,
 };
 
@@ -1243,6 +1260,7 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 			       int num, int left_num)
 {
 	u16 addr_reg;
+	bool sa1;
 	u16 start_reg;
 	u16 control_reg;
 	u16 restart_flag = 0;
@@ -1295,7 +1313,11 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	mtk_i2c_writew(i2c, control_reg, OFFSET_CONTROL);
 
 	addr_reg = i2c_8bit_addr_from_msg(msgs);
-	mtk_i2c_writew(i2c, addr_reg, OFFSET_SLAVE_ADDR);
+	if (force_slave_addr1 >= 0)
+		sa1 = force_slave_addr1;
+	else
+		sa1 = i2c->dev_comp->slave_addr_ver == 1;
+	mtk_i2c_writew(i2c, addr_reg, sa1 ? OFFSET_SLAVE_ADDR1 : OFFSET_SLAVE_ADDR);
 
 	/* Clear interrupt status */
 	mtk_i2c_writew(i2c, restart_flag | I2C_HS_NACKERR | I2C_ACKERR |
