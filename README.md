@@ -26,6 +26,7 @@
 | 热管理 (LVTS) | 31 传感器(25 有效);LVTS 硬件热复位保护,不做软件降频 |
 | 传感器 (SCP sensorhub) | 复用 stock SCP 固件,由它驱动 **bmi2xy 加速度+陀螺 / akm09919 磁力计 / tcs3720 距离+ALS**;AP 侧 `sensorhub_probe.ko` 做 IPI/ready 握手、6 个共享内存环(数据/super/列表/调试/cmd)与按 IIO buffer 开关 FW 传感器类型(accel 1 / gyro 4 / mag 2 / prox 8 / cct 95)。用户态 5 个 IIO 设备:`bmi2xy`(s16 mg,9806 µm/s²,mount matrix 修正 ⇒ GNOME 自动旋转)、`bmi2xy_gyro`(s32 µrad/s,10 ms)、`akm09919_mag`(s32 nT ⇒ µT)、`tcs3720_ps`(FW 已阈值化,nearlevel=1)、`tcs3720_light`(lux 取自 cct 多通道 **super 环** value[10],~1 Hz ⇒ 自动亮度);cct 值布局 v[0]=色温K、v[3..6]=RGBC、v[10]=lux |
 | 桌面系统 | Ubuntu 26.10 + GNOME/mutter 稳定运行 |
+| 桌面软件 | Firefox 160.0 snap 可安装/运行;内核 `SQUASHFS_LZO/LZ4` + `FUSE_FS` + `BLK_DEV_LOOP_MIN_COUNT=32` |
 | 日志通道 | pstore/ramoops 可保存 panic 前日志;CCCI 日志分三档,`echo 1 > /sys/kernel/ccci/mdsys/debug` 可临时放开 `[ccci_rx]` 等降噪项 |
 
 ### 未完成 / 阻塞 ❌
