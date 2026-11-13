@@ -107,6 +107,13 @@ CONFIG_SQUASHFS=y
 CONFIG_SQUASHFS_ZLIB=y
 CONFIG_SQUASHFS_XZ=y
 CONFIG_SQUASHFS_ZSTD=y
+# Ubuntu 26.10's firefox snap uses LZO squashfs; the kernel must decode it.
+CONFIG_SQUASHFS_LZO=y
+CONFIG_SQUASHFS_LZ4=y
+# FUSE for squashfuse/flatpak fallbacks; snapd needs more than the default
+# 8 loop devices once firefox + its base snaps are installed.
+CONFIG_FUSE_FS=y
+CONFIG_BLK_DEV_LOOP_MIN_COUNT=32
 
 # --- Built-in initramfs ---------------------------------------------------
 # Self-contained rootfs so the kernel has an init to run and stays up instead
