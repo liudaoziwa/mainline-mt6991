@@ -6,3 +6,4 @@ obj-$(CONFIG_MTK_NET_CCMNI)	+= ccmni/
 obj-$(CONFIG_MTK_ECCCI_DRIVER)	+= eccci/
 obj-$(CONFIG_MTK_TINYSYS_SCP_SUPPORT)	+= scp/
 obj-$(CONFIG_MTK_CONN_SCP)	+= conn_scp/
+obj-$(CONFIG_UFF_FINGERPRINT_REE_SPI)	+= fingerprint/

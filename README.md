@@ -43,7 +43,7 @@
 | 卫星通信 | **本机不支持**(FDT 有 `oplus,701_satellite` 节点但硬件未实配) |
 | MT6373/MT6363 PMIC 驱动 | 卡在主线 PMIF 的 EXT_REG_LONG(16-bit 长地址)超时 ⇒ 完整 regulator 驱动未启用;触摸 AVDD 由内核 `mt6991-pmic-early`(DT 序列,bare SWINF)接管,其它上电仍走 raw SPMI/寄存器 |
 | 相机 / 闪光灯 / ToF | FDT 有 cam0/1/2/4/6、EEPROM、AF(`ak7377m`)/OIS、`tof8801`、`flashlight_core`;mainline **整块未移植**(无 `/dev/video*`) |
-| 屏下指纹 | `oplus,fp_spi`(SPI3)+ `mediatek,goodix-fp`;未移植。vendor **UFF REE SPI**(`.../bsp/uff/driver/ree_spi/`,约 1.5k 行,`/dev/fingerprint_dev`)**不用 TEE**,可移植后自验证(安全性不考虑) |
+| 屏下指纹 | `oplus,fp_spi`(SPI3:CLK106/CS107/MOSI108/MISO109,IRQ114,RESET115,DVDD=MT6373 VFP 3.0V);**2026-11-13 内核已上机通**:SPI3+pinctrl+`fingerprint@0`+VFP pmic-early+`reg_fp_dvdd`+UFF **REE SPI** 驱动(`drivers/misc/mediatek/fingerprint/`,`/dev/fingerprint_dev`,不走 TEE);`/dev/fingerprint_dev` 创建,power/reset/raw SPI/IRQ 全通,**userspace Goodix 协议/比对未做**;最新 Image md5 `6f89706c…` |
 | 振动马达 | `awinic,aw8697_haptic` @ i2c5 0x5a(chip id 0x9270 = AW86927);**2026-11-13 已上机**:`aw86927-haptics` 注册,FF 播放时 `GLBRD5 0x00→0x07→0x00`、`DONEI` 置位;仅 EINT 28 未计数(不影响播放) |
 | NFC | `tms,nfc`(THN31)@ i2c13 0x28;未移植 |
 | 红外遥控 | `oplus,kookong_ir_core` / `oplus,kookong_ir_pwm`;未移植 |

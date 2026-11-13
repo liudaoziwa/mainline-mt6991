@@ -844,6 +844,22 @@
 		status = "disabled";
 	};
 
+	/* SPI3 -- Goodix under-display fingerprint (fingerprint@0). */
+	spi3: spi@16170000 {
+		compatible = "mediatek,mt8196-spi", "mediatek,mt6991-spi";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg = <0x0 0x16170000 0x0 0x100>,
+		      <0x0 0x16640000 0x0 0x10>;
+		interrupts = <GIC_SPI 306 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&topckgen CLK_TOP_UNIVPLL_D6_D2>,
+			 <&topckgen CLK_TOP_SPI3_BCLK>,
+			 <&pericfg_ao CLK_PERI_AO_SPI3_BCLK>;
+		clock-names = "parent-clk", "sel-clk", "spi-clk";
+		mediatek,pad-select = <1>;
+		status = "disabled";
+	};
+
 	spi6: spi@161d0000 {
 		compatible = "mediatek,mt8196-spi", "mediatek,mt6991-spi";
 		#address-cells = <1>;

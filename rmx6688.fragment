@@ -394,6 +394,10 @@ CONFIG_MTK_NET_RPS=y
 # Vendor MT6991 clock tree (cksys / vlp_cksys) for the SCP DVFS.
 CONFIG_CLK_MT6991=m
 
+# --- Fingerprint: Goodix UFF over REE SPI on SPI3 --------------------------
+# No TEE: the driver exposes /dev/fingerprint_dev and raw SPI transfers.
+CONFIG_UFF_FINGERPRINT_REE_SPI=y
+
 # --- Haptics: Awinic AW86927 on i2c5 ---------------------------------------
 # Mainline has drivers/input/misc/aw86927.c (FF-memless); the phone uses
 # AW86927 (chip id 0x9270).  Built-in so it lands in the Image.

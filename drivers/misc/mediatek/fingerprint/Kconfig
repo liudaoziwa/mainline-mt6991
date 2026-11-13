@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0
+config UFF_FINGERPRINT_REE_SPI
+	tristate "Oplus UFF fingerprint over REE SPI"
+	depends on SPI
+	help
+	  Oplus/Goodix under-display fingerprint transport driver for the
+	  REE (non-TEE) SPI path.  Exposes /dev/fingerprint_dev with raw SPI
+	  transfers plus power/reset/IRQ controls; the sensor protocol and
+	  matching live in userspace.
+
+	  Say Y to build it into the kernel (needed for the RMX6688 initramfs).

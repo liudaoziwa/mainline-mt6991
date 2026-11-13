@@ -225,6 +225,21 @@
 	};
 
 	/*
+	 * Fingerprint DVDD (MT6373 VFP, 3.0 V).  The rail itself is raised by
+	 * mt6991-pmic-early over bare SWINF; this fixed regulator only gives the
+	 * fingerprint driver a "dvdd" supply to request.  Once MT6373 has a real
+	 * regulator driver, point dvdd-supply back at it.
+	 */
+	reg_fp_dvdd: regulator-fp-dvdd {
+		compatible = "regulator-fixed";
+		regulator-name = "fp_dvdd";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
 	 * CPU DVFS supply stub: mediatek-cpufreq-hw asks for a "cpu" supply on
 	 * every CPU.  The real CPU voltage is stepped by the SoC's hardware
 	 * DVFS, so a fixed always-on regulator is enough and silences the
@@ -458,6 +473,20 @@
 					 <0x1e35 0xff 0x0c>;
 			mediatek,steps = <0x1e35 0xffffffff 0x0c 0>,
 					 <0x1d23 0x00000003 0x00000001 20000>;
+		};
+
+		/*
+		 * MT6373 VFP LDO (SPMI USID 5) -- fingerprint DVDD, 3.0 V.
+		 *   RG_LDO_VFP_EN  0x1d15  bit0 = enable, bit1 = low-power (clear)
+		 *   RG_VFP_VOSEL   0x1e31  [3:0] = ldo_volt_table1 index 11 = 3.0 V
+		 */
+		fp-dvdd {
+			mediatek,bus = <&pmif1>;
+			mediatek,usid = <0x05>;
+			mediatek,state = <0x1d15 0x01 0x01>,
+					 <0x1e31 0x0f 0x0b>;
+			mediatek,steps = <0x1e31 0xffffffff 0x0b 0>,
+					 <0x1d15 0x00000003 0x00000001 20000>;
 		};
 
 
@@ -1115,6 +1144,50 @@
 		};
 	};
 
+	/* SPI3 fingerprint bus: CLK=106, CS=107, MOSI=108, MISO=109. */
+	pinctrl_spi3: spi3-pins {
+		pins {
+			pinmux = <PINMUX_GPIO106__FUNC_SPI3_B_CLK>,
+				 <PINMUX_GPIO107__FUNC_SPI3_B_CSB>,
+				 <PINMUX_GPIO108__FUNC_SPI3_B_MO>,
+				 <PINMUX_GPIO109__FUNC_SPI3_B_MI>;
+			drive-strength = <MTK_DRIVE_4mA>;
+		};
+	};
+
+	/* Fingerprint CS as GPIO (low) before the SPI function is claimed. */
+	pinctrl_fp_cs: fp-cs-pins {
+		pins {
+			pinmux = <PINMUX_GPIO107__FUNC_GPIO107>;
+			output-low;
+			bias-disable;
+		};
+	};
+
+	pinctrl_spi3_cs: fp-cs-func-pins {
+		pins {
+			pinmux = <PINMUX_GPIO107__FUNC_SPI3_B_CSB>;
+			drive-strength = <MTK_DRIVE_4mA>;
+		};
+	};
+
+	/* Fingerprint reset: GPIO115, idle low. */
+	pinctrl_fp_reset: fp-reset-pins {
+		pins {
+			pinmux = <PINMUX_GPIO115__FUNC_GPIO115>;
+			output-low;
+		};
+	};
+
+	/* Fingerprint IRQ: GPIO114, input pull-down (vendor default). */
+	pinctrl_fp_irq: fp-irq-pins {
+		pins {
+			pinmux = <PINMUX_GPIO114__FUNC_GPIO114>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
 	/* I2C0: SCL=GPIO99, SDA=GPIO100 (vendor scl/sda-gpio-id 0x63/0x64) */
 	pinctrl_i2c0: i2c0-pins {
 		pins {
@@ -1205,6 +1278,44 @@
 			pinmux = <PINMUX_GPIO11__FUNC_GPIO11>;
 			input-enable;
 			bias-pull-up;
+		};
+	};
+};
+
+/*
+ * SPI3: Goodix under-display fingerprint.  Wiring from the vendor FDT:
+ * CLK=GPIO106, CS=GPIO107, MOSI=GPIO108, MISO=GPIO109, IRQ=GPIO114,
+ * RESET=GPIO115.  DVDD is MT6373 VFP (3.0 V), raised by pmic-early.
+ */
+&spi3 {
+	status = "okay";
+
+	fingerprint@0 {
+		compatible = "oplus,fp_spi";
+		reg = <0>;
+		spi-max-frequency = <26000000>;
+		spi-mode = <0>;
+		spi-id = <3>;
+		spi-irq = <114>;
+		uff,gpio_irq = <&pio 114 0>;
+		uff,gpio_reset = <&pio 115 0>;
+		uff,gpio_cs = <&pio 107 0>;
+		pinctrl-names = "default", "fp_spi_driver", "fp_cs_func", "gpio_cs_pull_down";
+		pinctrl-0 = <&pinctrl_fp_irq>, <&pinctrl_fp_reset>, <&pinctrl_fp_cs>;
+		pinctrl-1 = <&pinctrl_spi3>;
+		pinctrl-2 = <&pinctrl_spi3_cs>;
+		pinctrl-3 = <&pinctrl_fp_cs>;
+		dvdd-supply = <&reg_fp_dvdd>;
+		dvdd-config = <3000000 3000000 120000>;
+		optical_irq_disable_flag = <1>;
+		power-num = <1>;
+		status = "okay";
+
+		power_source_1 {
+			power-mode = <1>;
+			power-name = "dvdd";
+			power-config = "dvdd-config";
+			delay-time = <0>;
 		};
 	};
 };
