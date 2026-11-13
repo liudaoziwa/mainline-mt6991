@@ -378,6 +378,13 @@
 			#clock-cells = <1>;
 		};
 
+		/* IMP_IIC_WRAP_E -- east-domain I2C gate provider (I2C5) */
+		imp_iic_wrap_e: clock-controller@120c0000 {
+			compatible = "mediatek,mt8196-imp-iic-wrap-e", "syscon";
+			reg = <0 0x120c0000 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
 		/*
 		 * PERICFG_AO -- peripheral always-on configuration.
 		 * Provides the DMA bus clock for the I2C adapters.
@@ -423,6 +430,25 @@
 			      <0 0x16380000 0 0x10000>;
 			interrupts = <GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH 0>;
 			clocks = <&imp_iic_wrap_n CLK_IMPN_I2C1>,
+				 <&pericfg_ao CLK_PERI_AO_AP_DMA_X32W_BCLK>;
+			clock-names = "main", "dma";
+			clock-div = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * I2C5 -- Awinic AW86927 haptic (0x5a).  Vendor node:
+		 * i2c@120a0000, IRQ 0x155 (341), clocks from
+		 * imp_iic_wrap_e, SCL/SDA = GPIO176/177.
+		 */
+		i2c5: i2c@120a0000 {
+			compatible = "mediatek,mt8192-i2c";
+			reg = <0 0x120a0000 0 0x20000>,
+			      <0 0x16400000 0 0x10000>;
+			interrupts = <GIC_SPI 341 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&imp_iic_wrap_e CLK_IMPE_I2C5>,
 				 <&pericfg_ao CLK_PERI_AO_AP_DMA_X32W_BCLK>;
 			clock-names = "main", "dma";
 			clock-div = <1>;

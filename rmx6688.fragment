@@ -394,6 +394,11 @@ CONFIG_MTK_NET_RPS=y
 # Vendor MT6991 clock tree (cksys / vlp_cksys) for the SCP DVFS.
 CONFIG_CLK_MT6991=m
 
+# --- Haptics: Awinic AW86927 on i2c5 ---------------------------------------
+# Mainline has drivers/input/misc/aw86927.c (FF-memless); the phone uses
+# AW86927 (chip id 0x9270).  Built-in so it lands in the Image.
+CONFIG_INPUT_AW86927=y
+
 # --- Buttons: power / volume-up (MT6363 PMIC) + volume-down (GPIO11) -------
 # Power and volume-up are the MT6363 PWRKEY/HOMEKEY lines.  The MT6991 SPMI
 # controller runs without an IRQ domain, so the keys are polled (TOPSTATUS)

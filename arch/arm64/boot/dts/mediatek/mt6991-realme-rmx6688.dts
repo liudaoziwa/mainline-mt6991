@@ -838,6 +838,27 @@
 	assigned-clock-parents = <&clk26m>, <&clk26m>, <&clk26m>, <&clk26m>;
 };
 
+/*
+ * I2C5: Awinic AW86927 haptic (0x5a).  Vendor FDT uses 1 MHz; keep 400 kHz
+ * for bring-up margin.  Reset = GPIO18, IRQ = GPIO14 (vendor FDT).
+ */
+&i2c5 {
+	status = "okay";
+	compatible = "mediatek,mt6991-i2c";
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_i2c5>;
+
+	vibrator@5a {
+		compatible = "awinic,aw86927";
+		reg = <0x5a>;
+		reset-gpios = <&pio 18 GPIO_ACTIVE_LOW>;
+		interrupts-extended = <&pio 14 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_aw_irq>;
+	};
+};
+
 &i2c6 {
 	status = "okay";
 	compatible = "mediatek,mt6991-i2c";
@@ -1109,6 +1130,25 @@
 		pins {
 			pinmux = <PINMUX_GPIO200__FUNC_SCL1>,
 				 <PINMUX_GPIO201__FUNC_SDA1>;
+			bias-pull-up;
+		};
+	};
+
+	/* I2C5: SCL=GPIO176, SDA=GPIO177 (vendor pinmux 0xb001/0xb101). */
+	pinctrl_i2c5: i2c5-pins {
+		pins {
+			pinmux = <PINMUX_GPIO176__FUNC_SCL5>,
+				 <PINMUX_GPIO177__FUNC_SDA5>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+
+	/* AW86927 IRQ: GPIO14, input pull-up (vendor aw_irq_gpio_default). */
+	pinctrl_aw_irq: aw-irq-pins {
+		pins {
+			pinmux = <PINMUX_GPIO14__FUNC_GPIO14>;
+			input-enable;
 			bias-pull-up;
 		};
 	};
