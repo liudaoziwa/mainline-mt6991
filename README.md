@@ -9,9 +9,10 @@
 | CPU 频率 | `cpufreq-hw`(performance-domain):A720 339–2400 / X4 622–3300 / X925 798–3730 MHz |
 | UFS 存储 | 挂载 Ubuntu rootfs 正常启动 |
 | DRM + 面板 | EXDMA3+BLENDER+OUTPROC 新架构;1280×2800;**60/90/120/144Hz**;DSC 1.2;DPMS off/on;`mediatekdrmfb` fbdev 控制台 |
-| 显示颜色 | 强制 OVL 只 advertise 8-bit,修 24.04 mutter 选 10-bit 导致的颜色错乱 |
+| 显示颜色 | 强制 OVL 只 advertise 8-bit(历史原因:24.04 mutter 会选 10-bit XR30;当前 **26.10** 继续沿用 8-bit,颜色正常) |
 | 屏幕亮度 | AE031 面板 DCS `0x51`(非 PWM),自带 `backlight` 设备;保守上限 `0x800`/默认 `0x600`(厂商正常上限 `0xe0e`/硬件 `0xffe`),GNOME 滑块可调 |
 | GPU | panthor / Immortalis-G925:probe、渲染、devfreq/DVFS(338–1612MHz);修了空闲 runtime-PM 循环崩溃 |
+| 音频 / 扬声器 | ✅ **扬声器已出声**:TFA9873×2(i2c6 0x34/0x35)+ AFE `I2SOUT4`。根因是 MT6991 i2c 的 `SLAVE_ADDR1=0x94`(mainline 误写 0x04,导致所有 i2c6 器件 NAK);已补 9873 支持、DPCM `DL1` FE→`I2SOUT4` BE、BE startup 自动打开 `AFE_CONN026/027` 的 `DL1` 连接;`pw-play` 440Hz 实机正常。**耳机/听筒/麦克风仍依赖未移植的 MT6681** |
 | 触摸屏 | Synaptics S3910 (TCM v1, SPI6):单点/多点、量程 12799×27999→1280×2800、边缘校准;固件不自动刷写。AVDD(MT6373 VTP 3.1V)已交给内核:`mt6991-pmic-early` 在 subsys_initcall 用 DT 序列(bare SWINF)拉起,早于 SPI6/syna-tcm 首次 probe,init 不再上电、不再 unbind/rebind |
 | USB-C (host/OTG) | 端口 **host-only**(MTU3 host + mtk-xhci):OTG 转接器下 U 盘/键鼠枚举正常。**MT6379 TCPC 自动 CC 角色切换**(500ms 轮询,PD 窗口须单字节读):待机 DRP toggling;外设(CC=Rd)插入自动开 OTG 5V boost,拔掉自动关并 re-arm;充电器(CC=Rp)插入自动关 boost,5V 充电不受影响。U 盘/充电器交替插拔任意顺序实测可靠(b60,5 个循环零报错)。调试用串口/RNDIS gadget 已退休,eUSB2 repeater phy 链保留 |
 | WiFi | MT6653 (connv3, PCIe HIF):扫描/认证/关联/WPA2 四次握手/联网全部正常;conninfra+connadp+connfem+gen4m+PCIe 全量内建。**日志降噪**:`.is_en_sw_emi_read=FALSE` 关掉那条永不回 MSI 的 CB-DMA debug 读(`halMbuRead` 1698→0、EMI MPU 告警 18→0),`kalIsNoMmioReadReason` 不再成立 ⇒ debug dump 自动回退 MMIO,信息不丢 |
@@ -24,7 +25,7 @@
 | 基带 / Modem (M80) | CCCI/eccci 全量内建 + port_tty.c 给出**真 AT tty `/dev/ttyCCCI0`**;ch14 FS 由内核 `port_fs_reply()` 全量应答(§CCCI_FS_RE_HANDOFF),RPC `0x400F`/`0x4010`/`0x4014` 已内核实现;mdota(901 文件 8.6MB)以 `port_char_mdata` 编进内核。实测 `md_state 0→2→3→4 READY`(25–28 s),长时间零 EE / 零 `-1001`;ModemManager(`mtk-soc` 插件)控制面已通 |
 | 热管理 (LVTS) | 31 传感器(25 有效);LVTS 硬件热复位保护,不做软件降频 |
 | 传感器 (SCP sensorhub) | 复用 stock SCP 固件,由它驱动 **bmi2xy 加速度+陀螺 / akm09919 磁力计 / tcs3720 距离+ALS**;AP 侧 `sensorhub_probe.ko` 做 IPI/ready 握手、6 个共享内存环(数据/super/列表/调试/cmd)与按 IIO buffer 开关 FW 传感器类型(accel 1 / gyro 4 / mag 2 / prox 8 / cct 95)。用户态 5 个 IIO 设备:`bmi2xy`(s16 mg,9806 µm/s²,mount matrix 修正 ⇒ GNOME 自动旋转)、`bmi2xy_gyro`(s32 µrad/s,10 ms)、`akm09919_mag`(s32 nT ⇒ µT)、`tcs3720_ps`(FW 已阈值化,nearlevel=1)、`tcs3720_light`(lux 取自 cct 多通道 **super 环** value[10],~1 Hz ⇒ 自动亮度);cct 值布局 v[0]=色温K、v[3..6]=RGBC、v[10]=lux |
-| 桌面系统 | Ubuntu 24.04 + GNOME/mutter 稳定运行 |
+| 桌面系统 | Ubuntu 26.10 + GNOME/mutter 稳定运行 |
 | 日志通道 | pstore/ramoops 可保存 panic 前日志;CCCI 日志分三档,`echo 1 > /sys/kernel/ccci/mdsys/debug` 可临时放开 `[ccci_rx]` 等降噪项 |
 
 ### 未完成 / 阻塞 ❌
@@ -32,14 +33,26 @@
 | 子系统 | 状态 / 卡点 |
 |---|---|
 | 蓝牙 (MT6653) | 正在从厂商 `bt/linux_v2` 改走**主线 BlueZ(`btmtk`/`btmtkuart`, serdev+H4+STP)**:驱动绑定、`hci0` 注册、connv3 电源、MT6653 握手代码均已实现;但 BT UART 经 **UARTHUB**,AP 第一帧始终无回应(`query uart failed -110`)。引脚复用/复位/uarthub 放行序列厂商 pre_on 顺序均已试过,疑点转向 uarthub 数据面与 connv3 上电竞争 |
+| WiFi 热点 (SoftAP) | 开放 AP + NAT 可用(`GT7-Open`);**WPA2 4-way 仍失败**;为避免影响正常启动已 `systemctl disable hotspot`。详见 `doc/CONNECTIVITY_PORT_NOTES.md` §13.7 |
 | 数据面(上网) | ModemManager 控制面(握手/注册/APN profile/`mobile_data`)已通,modem 也已注册在 5G NR(`+C5GREG: 0,1`;`AT+CGDCONT?` 裸 `OK` = AP 从未配过 APN);但 `DATA_ACT` 被 modem 本地拒(`D2CPM_INVAL_ARG/NOT_PERM/NW_UNKNOWN`),`AT+CGACT=1,0` 报同一个 cause ⇒ 门槛在 modem 侧状态、与 MIPC payload 无关。缺 RIL 等价物给 ccmni 配地址 |
 | 系统 suspend/resume | 电源域下电会丢 bootloader 状态(MIPI TX PHY、blender 链、SMMU、唤醒源均未自包含) |
 | 快充 VOOC/SuperVOOC | 需电荷泵 `mt6379_2p`(i2c3 0x53)+专有协议+OPPO 框架;当前仅 5V 标准充电 |
 | GPS | **内核侧 100% 打通**(`gps_drv_dl_v062` + DTS `gps@40c00000` + connv2 上电 WDT 修复;chipid/MCU/GDL 链路全通);卡在厂商 userspace(`mnld` 依赖 Android binder)。详见 `doc/GPS_PORT_NOTES.md` |
 | 冷启动无 LK 显示 | 依赖 bootloader 显示的中间级(PHY/mutex/blender)尚未由主线完整接管 |
 | 10-bit / HDR scanout | **2026-10-18 实测可行、暂不采用**:XR30 编码 `0x20102` 能正确显示;残余朦胧来自下游 8bpp 量化,桌面收益≈0,默认保持 8-bit。详见 `doc/DISPLAY_COLOR_NOTES.md` |
+| 卫星通信 | **本机不支持**(FDT 有 `oplus,701_satellite` 节点但硬件未实配) |
 | MT6373/MT6363 PMIC 驱动 | 卡在主线 PMIF 的 EXT_REG_LONG(16-bit 长地址)超时 ⇒ 完整 regulator 驱动未启用;触摸 AVDD 由内核 `mt6991-pmic-early`(DT 序列,bare SWINF)接管,其它上电仍走 raw SPMI/寄存器 |
-| 音频 / 扬声器 | ✅ **已出声**:TFA9873×2(i2c6 0x34/0x35)+ AFE `I2SOUT4`。根因是 MT6991 i2c 的 `SLAVE_ADDR1=0x94`(mainline 误写 0x04,导致所有 i2c6 器件 NAK);已补 9873 支持、DPCM `DL1` FE→`I2SOUT4` BE、BE startup 自动打开 `AFE_CONN026/027` 的 `DL1` 连接;`pw-play` 440Hz 实机正常 |
+| 相机 / 闪光灯 / ToF | FDT 有 cam0/1/2/4/6、EEPROM、AF(`ak7377m`)/OIS、`tof8801`、`flashlight_core`;mainline **整块未移植**(无 `/dev/video*`) |
+| 屏下指纹 | `oplus,fp_spi`(SPI3)+ `mediatek,goodix-fp`;未移植。vendor **UFF REE SPI**(`.../bsp/uff/driver/ree_spi/`,约 1.5k 行,`/dev/fingerprint_dev`)**不用 TEE**,可移植后自验证(安全性不考虑) |
+| 振动马达 | `awinic,aw8697_haptic` @ i2c5 0x5a(chip id 0x9270 = AW86927);**2026-11-13 已上机**:`aw86927-haptics` 注册,FF 播放时 `GLBRD5 0x00→0x07→0x00`、`DONEI` 置位;仅 EINT 28 未计数(不影响播放) |
+| NFC | `tms,nfc`(THN31)@ i2c13 0x28;未移植 |
+| 红外遥控 | `oplus,kookong_ir_core` / `oplus,kookong_ir_pwm`;未移植 |
+| 耳机 / 听筒 / 麦克风 | MT6681(`scp-i2c1` 0x6b,codec/accdet/auxadc)未移植 ⇒ 耳机检测/录音/通话音频不可用 |
+| 语音通话 / VoLTE | 依赖 modem 语音 + MT6681 通话音频 + IMS/RIL;未做 |
+| 双卡 / DSDS(SIM2) | FDT 有 `oplus,sim_detect`;目前只在单卡上验证过,SIM2/双卡未验证 |
+| USB-C DP Alt Mode / 外接显示 | FDT 有 `usb-dp-selector`/`dptx`/`edp-tx`;当前 USB-C 只做 host 数据,未移植 DP/eDP,外接屏未验证 |
+| USB device / gadget 模式 | 当前 `USB_MTU3_HOST=y` + mtk-xhci,只能做 host;要 adb/MTP/RNDIS 需重新启用 gadget(早期 CDC-ACM 见 `doc/usb-gadget-progress-summary.md`) |
+| 硬件 RTC / 定时唤醒 | FDT 有 `mediatek,mt6685-rtc`(SPMI MT6685 MFD),无驱动 ⇒ 开机时间不持久、`wakealarm`/定时开机不可用 |
 
 ## 布局
 
