@@ -494,6 +494,41 @@
 		};
 
 		/*
+		 * SCP I2C1 -- the MT6681 audio codec PMIC hangs here
+		 * (vendor scp_i2c1, MT6991 multi-host i2c controller).
+		 * The "main" clock is vlp_scp_iic_sel in vlp_cksys; the
+		 * real source rate is described by clk-src-in-hz because
+		 * the VLP mux is not modelled as a rate-aware CCF clock.
+		 * The DMA gate is only meaningful for DMA-capable hosts,
+		 * which the AP driver does not use on this channel, but the
+		 * controller still needs the AP-DMA bus clock to respond.
+		 */
+		scp_i2c1: i2c@1cc40000 {
+			compatible = "mediatek,mt6991-i2c";
+			reg = <0 0x1cc40000 0 0x40000>,
+			      <0 0x1c640000 0 0x20000>;
+			interrupts = <GIC_SPI 690 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&vlp_cksys 4>,
+				 <&pericfg_ao CLK_PERI_AO_AP_DMA_X32W_BCLK>;
+			clock-names = "main", "dma";
+			clock-div = <1>;
+			clk-src-in-hz = <130000000>;
+			ch-offset-i2c = <0x20000>;
+			i2c-offset-scp = <0x20000>;
+			scl-gpio-id = <52>;
+			sda-gpio-id = <53>;
+			scp-wake-en = <1>;
+			vlpcfg-base = <0x1c001000>;
+			vlp-scp-sleep = <0x92c 0x1 0x4>;
+			vlp-scp-sleep-stat = <0x934 0xf0000 0x1f00>;
+			mediatek,wake-scp-check-en;
+			mediatek,use-l2-slp-stat;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
 		 * UART0.  Reachable only through the USB connector with a
 		 * factory cable on retail hardware, so this is a debugging
 		 * convenience rather than the primary console -- see the

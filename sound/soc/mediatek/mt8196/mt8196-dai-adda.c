@@ -116,8 +116,64 @@ enum {
 	SUPPLY_SEQ_ADDA_AFE_ON,
 	SUPPLY_SEQ_ADDA_FIFO,
 	SUPPLY_SEQ_ADDA_AP_DMIC,
+	SUPPLY_SEQ_ADDA_AUD_PAD_TOP,
+	SUPPLY_SEQ_ADDA_MTKAIF_CFG,
 	SUPPLY_SEQ_ADDA_UL_ON,
 };
+
+/*
+ * MTKAIF capture needs the aud-pad RX FIFO and the MTKAIFV4 RX AFE gates,
+ * none of which the upstream MT8196 code wires up (upstream only ever ran
+ * ADDA capture through AP DMIC on this block).  Mirror the vendor MT6991
+ * sequence: pad-top sets protocol/CLKP2 framing, mtkaif-cfg sets the RX
+ * protocol and clock inversion, and the "ADDA Capture" DAI widget pulls
+ * all of them in through the routes below.
+ */
+static int mtk_adda_pad_top_event(struct snd_soc_dapm_widget *w,
+				  struct snd_kcontrol *kcontrol,
+				  int event)
+{
+	struct snd_soc_component *cmpnt = snd_soc_dapm_to_component(w->dapm);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		/* MTKAIF protocol 2 with CLK phase 2 (vendor 0xB8) */
+		regmap_write(afe->regmap, AFE_AUD_PAD_TOP_CFG0, 0xB8);
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static int mtk_adda_mtkaif_cfg_event(struct snd_soc_dapm_widget *w,
+				     struct snd_kcontrol *kcontrol,
+				     int event)
+{
+	struct snd_soc_component *cmpnt = snd_soc_dapm_to_component(w->dapm);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		/* protocol 2 */
+		regmap_write(afe->regmap, AFE_MTKAIF0_CFG0, 0x00010000);
+		regmap_write(afe->regmap, AFE_MTKAIF1_CFG0, 0x00010000);
+		/* rxif clkinv_adc inverse (vendor keeps this for MTKAIFv4) */
+		regmap_update_bits(afe->regmap, AFE_MTKAIF0_CFG0,
+				   RG_MTKAIF0_RXIF_CLKINV_MASK_SFT,
+				   0x1 << RG_MTKAIF0_RXIF_CLKINV_SFT);
+		regmap_update_bits(afe->regmap, AFE_MTKAIF1_CFG0,
+				   RG_MTKAIF1_RXIF_CLKINV_ADC_MASK_SFT,
+				   0x1 << RG_MTKAIF1_RXIF_CLKINV_ADC_SFT);
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
 
 static int mtk_adda_ul_src_set_dmic_phase_sync(struct mtk_base_afe *afe)
 {
@@ -357,6 +413,20 @@ static const struct snd_soc_dapm_widget mtk_dai_adda_widgets[] = {
 			      UL_AP_DMIC_ON_SFT, 0,
 			      mtk_adda_sleep_on_pmd_event,
 			      SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_SUPPLY_S("AUD_PAD_TOP", SUPPLY_SEQ_ADDA_AUD_PAD_TOP,
+			      AFE_AUD_PAD_TOP_CFG0, RG_RX_FIFO_ON_SFT, 0,
+			      mtk_adda_pad_top_event,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_SUPPLY_S("AUD_PAD_CLK", SUPPLY_SEQ_ADDA_AUD_PAD_TOP,
+			      AFE_ADDA_MTKAIFV4_TX_CFG0,
+			      MTKAIFV4_TXIF_AFE_ON_SFT, 0, NULL, 0),
+	SND_SOC_DAPM_SUPPLY_S("ADDA_MTKAIFV4_RX", SUPPLY_SEQ_ADDA_MTKAIF_CFG,
+			      AFE_ADDA_MTKAIFV4_RX_CFG0,
+			      MTKAIFV4_RXIF_AFE_ON_SFT, 0, NULL, 0),
+	SND_SOC_DAPM_SUPPLY_S("ADDA_MTKAIF_CFG", SUPPLY_SEQ_ADDA_MTKAIF_CFG,
+			      SND_SOC_NOPM, 0, 0,
+			      mtk_adda_mtkaif_cfg_event,
+			      SND_SOC_DAPM_PRE_PMU),
 	SND_SOC_DAPM_SUPPLY_S("ADDA_FIFO", SUPPLY_SEQ_ADDA_FIFO,
 			      AFE_ADDA_UL0_SRC_CON1,
 			      FIFO_SOFT_RST_SFT, 1,
@@ -375,6 +445,13 @@ static const struct snd_soc_dapm_widget mtk_dai_adda_widgets[] = {
 static const struct snd_soc_dapm_route mtk_dai_adda_routes[] = {
 	/* capture */
 	{"ADDA_UL_Mux", "MTKAIF", "ADDA Capture"},
+
+	{"ADDA Capture", NULL, "ADDA Enable"},
+	{"ADDA Capture", NULL, "ADDA Capture Enable"},
+	{"ADDA Capture", NULL, "AUD_PAD_TOP"},
+	{"ADDA Capture", NULL, "AUD_PAD_CLK"},
+	{"ADDA Capture", NULL, "ADDA_MTKAIFV4_RX"},
+	{"ADDA Capture", NULL, "ADDA_MTKAIF_CFG"},
 	{"ADDA_UL_Mux", "AP_DMIC", "AP DMIC Capture"},
 	{"ADDA_UL_Mux", "AP_DMIC_MULTI_CH", "AP DMIC MULTICH Capture"},
 

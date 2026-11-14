@@ -716,6 +716,21 @@
 		 * happened.  The amp rail (amp-vaud18) comes up first: the
 		 * vendor driver only pulses RESETN with the supplies already on.
 		 */
+		/*
+		 * MT6685 DCXO BBCK5 (SID 9, reg 0x79e bit2): the external
+		 * buffer that feeds the 26M clock into the MT6681 codec.
+		 * The codec driver calls this via mt6685_set_dcxo() on
+		 * Android (CONFIG_MT6685_AUDCLK); we do not have the MT6685
+		 * MFD, so raise it once at boot like the other early rails.
+		 * Vendor value read on the device: 0xa9 -> 0xad.
+		 */
+		codec-dcxo {
+			mediatek,bus = <&pmif1>;
+			mediatek,usid = <0x09>;
+			mediatek,state = <0x79e 0x00000004 0x00000004>;
+			mediatek,steps = <0x79e 0x00000004 0x00000004 0>;
+		};
+
 		amp-vaud18 {
 			mediatek,bus = <&pmif1>;
 			mediatek,usid = <0x05>;
@@ -1280,6 +1295,53 @@
 			bias-pull-up;
 		};
 	};
+
+	/*
+	 * MT6681 codec enable: SoC GPIO9.  The vendor FDT drives it as a
+	 * plain output; pmic-early already raises it before any i2c device
+	 * probes, and these states let the MT6681 MFD driver reset the chip
+	 * (id-check retry) using the same pin.
+	 */
+	codec_en_off: codec-en-off-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO9__FUNC_GPIO9>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	codec_en_on: codec-en-on-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO9__FUNC_GPIO9>;
+			output-high;
+			bias-disable;
+		};
+	};
+
+	/*
+	 * MTKAIF (SoC <-> MT6681 audio data): CLK=GPIO54, DAT_MOSI0=GPIO56,
+	 * DAT_MISO0=GPIO58.  The mt8196 AFE has no MTKAIF pinctrl widget, so
+	 * the "default" state on the afe node keeps these pads muxed.
+	 */
+	aud_mtkaif_on: aud-mtkaif-on-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO54__FUNC_AUD_CLK_MOSI>,
+				 <PINMUX_GPIO56__FUNC_AUD_DAT_MOSI0>,
+				 <PINMUX_GPIO58__FUNC_AUD_DAT_MISO0>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_mtkaif_off: aud-mtkaif-off-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO54__FUNC_GPIO54>,
+				 <PINMUX_GPIO56__FUNC_GPIO56>,
+				 <PINMUX_GPIO58__FUNC_GPIO58>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
 };
 
 /*
@@ -1403,6 +1465,19 @@
 		compatible = "realme,rmx6688-sound";
 		realme,codec-left = <&tfa98xx_l>;
 		realme,codec-right = <&tfa98xx_r>;
+		realme,codec-mic = <&mt6681_sound>;
+		/*
+		 * The mt8196 AFE driver does not manage the UL ADC gates; the
+		 * machine enables them for the MT6681 capture path.  Indices
+		 * are the vendor FDT's AFE clock specifiers (the *_AFE gates,
+		 * whose parents are the afe_ul*_adc gates).
+		 */
+		clocks = <&audiosys 0x2b>, <&audiosys 0x27>,
+			 <&audiosys 0x23>, <&audiosys 0x1f>,
+			 <&audiosys 0x1b>, <&audiosys 0x17>;
+		clock-names = "aud_ul0_adc_clk", "aud_ul0_adc_hires_clk",
+			      "aud_ul1_adc_clk", "aud_ul1_adc_hires_clk",
+			      "aud_ul2_adc_clk", "aud_ul2_adc_hires_clk";
 		status = "okay";
 	};
 
@@ -1411,9 +1486,16 @@
 		reg = <0 0x1a110000 0 0x9000>;
 		interrupts = <GIC_SPI 351 IRQ_TYPE_LEVEL_HIGH 0>;
 		power-domains = <&scpsys MT6991_POWER_DOMAIN_AUDIO>;
-		pinctrl-names = "aud-gpio-i2s4-off", "aud-gpio-i2s4-on";
-		pinctrl-0 = <&aud_gpio_i2s4_off>;
-		pinctrl-1 = <&aud_gpio_i2s4_on>;
+		/*
+		 * "default" keeps the MTKAIF pads (CLK/MOSI0/MISO0) muxed for
+		 * the MT6681 capture/playback path; the i2s4 states are looked
+		 * up by the AFE's DAPM pinctrl widget.
+		 */
+		pinctrl-names = "default",
+				"aud-gpio-i2s4-off", "aud-gpio-i2s4-on";
+		pinctrl-0 = <&aud_mtkaif_on>;
+		pinctrl-1 = <&aud_gpio_i2s4_off>;
+		pinctrl-2 = <&aud_gpio_i2s4_on>;
 
 		clocks = <&audiosys 0x71>, <&audiosys 0x73>,
 			 <&cksys 0x50>, <&cksys 0x51>, <&cksys 0x5c>,
@@ -1427,5 +1509,49 @@
 			      "vlp_mux_audio_int", "vlp_mux_aud_eng1",
 			      "vlp_mux_aud_eng2", "vlp_mux_audio_h";
 		status = "okay";
+	};
+};
+
+/*
+ * MT6681 audio codec PMIC, on the SCP I2C1 multi-host controller.
+ *
+ * This controller is the only proven path to the codec: Android drives it
+ * through the SCP firmware, the SCP (stock firmware, loaded from the
+ * initramfs) arbitrates the bus, and the AP registers are routed to the
+ * SCP host window via ch-offset-i2c.  A first attempt bit-banged the pads
+ * as GPIO, which probed the chip fine but collapsed as soon as the SCP
+ * firmware started reconfiguring its VLP clock/pad domain (every codec
+ * register access after SCP boot returned -EIO).
+ *
+ * The vendor FDT never claims pinctrl for these pads; the bootloader has
+ * muxed them to SCP_SCL1/SDA1 and Android leaves them alone, so we do too.
+ */
+&scp_i2c1 {
+	status = "okay";
+
+	mt6681_pmic: mt6681-pmic@6b {
+		compatible = "mediatek,mt6681_pmic";
+		reg = <0x6b>;
+		status = "okay";
+
+		pinctrl-names = "codec-en-off", "codec-en-on";
+		pinctrl-0 = <&codec_en_off>;
+		pinctrl-1 = <&codec_en_on>;
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		mt6681_sound: mt6681-sound {
+			compatible = "mediatek,mt6681-sound";
+			status = "okay";
+
+			mediatek,dmic-mode = <0>;
+			/*
+			 * 3 = MIC_TYPE_MUX_DCC (analog/DCC electret
+			 * mics).  The property is the vendor driver's
+			 * 4-entry array; entry 3 covers AIN3/4.
+			 */
+			mediatek,mic-type = <3 3 3 3>;
+		};
 	};
 };

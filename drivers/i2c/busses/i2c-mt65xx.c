@@ -127,6 +127,15 @@ static const char * const i2c_mt65xx_clk_ids[I2C_MT65XX_CLK_MAX] = {
 	"main", "dma", "pmic", "arb"
 };
 
+/* MT6991 SCP I2C */
+#define I2C_OFFSET_AP			0x0
+#define I2C_OFFSET_SCP			0x20000
+#define I2C_SCP_INTR_EN			0x4
+#define I2C_CCU_INTR_EN			0x2
+#define I2C_MCU_INTR_EN			0x1
+#define I2C_FIFO_DATA_LEN_MASK		0x001f
+#define SCP_WAKE_TIMEOUT		200
+
 enum DMA_REGS_OFFSET {
 	OFFSET_INT_FLAG = 0x0,
 	OFFSET_INT_EN = 0x04,
@@ -177,6 +186,7 @@ enum I2C_REGS_OFFSET {
 	OFFSET_PATH_DIR,
 	OFFSET_DEBUGSTAT,
 	OFFSET_DEBUGCTRL,
+	OFFSET_MCU_INTR,
 	OFFSET_TRANSFER_LEN_AUX,
 	OFFSET_CLOCK_DIV,
 	OFFSET_LTIMING,
@@ -247,6 +257,7 @@ static const u16 mt_i2c_regs_v2[] = {
 	[OFFSET_SCL_MIS_COMP_POINT] = 0x90,
 	[OFFSET_DEBUGSTAT] = 0xe4,
 	[OFFSET_DEBUGCTRL] = 0xe8,
+	[OFFSET_MCU_INTR] = 0x40,
 	[OFFSET_FIFO_STAT] = 0xf4,
 	[OFFSET_FIFO_THRESH] = 0xf8,
 	[OFFSET_DCM_EN] = 0xf88,
@@ -276,6 +287,7 @@ static const u16 mt_i2c_regs_v3[] = {
 	[OFFSET_SLAVE_ADDR] = 0x94,
 	[OFFSET_DEBUGSTAT] = 0xe4,
 	[OFFSET_DEBUGCTRL] = 0xe8,
+	[OFFSET_MCU_INTR] = 0x40,
 	[OFFSET_FIFO_STAT] = 0xf4,
 	[OFFSET_FIFO_THRESH] = 0xf8,
 	[OFFSET_DCM_EN] = 0xf88,
@@ -332,6 +344,16 @@ struct mtk_i2c {
 	void __iomem *pdmabase;		/* dma base address*/
 	struct clk_bulk_data clocks[I2C_MT65XX_CLK_MAX]; /* clocks for i2c */
 	bool have_pmic;			/* can use i2c pins from PMIC */
+	bool is_scp_channel;		/* MT6991 SCP-owned i2c channel */
+	bool wake_scp_check_en;		/* wake the SCP before transfers */
+	bool use_l2_slp_stat;
+	unsigned int ch_offset_i2c;	/* host register window offset */
+	unsigned int i2c_offset_scp;	/* window offset of the SCP host */
+	void __iomem *vlpcfg_base_va;	/* VLP sleep control (SCP wake) */
+	unsigned int sleep_reg, wakeup_mask, wakeup_pre_mask;
+	unsigned int sleep_stat, not_in_sleep_mask, l2_slp_stat_mask;
+	u32 scp_wake_count;
+	spinlock_t scp_wake_lock;
 	bool use_push_pull;		/* IO config push-pull mode */
 	bool disable_speed_compensate;	/* disable speed compensate when stretch */
 
@@ -594,15 +616,21 @@ static const struct of_device_id mtk_i2c_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, mtk_i2c_of_match);
 
+/*
+ * MT6991 SCP I2C: the controller serves several hosts (AP / SCP / CCU);
+ * each host sees its own register window at a channel offset from the
+ * base ("ch-offset-i2c").  All register access below goes through these
+ * accessors, so offsetting them here covers the whole driver.
+ */
 static u16 mtk_i2c_readw(struct mtk_i2c *i2c, enum I2C_REGS_OFFSET reg)
 {
-	return readw(i2c->base + i2c->dev_comp->regs[reg]);
+	return readw(i2c->base + i2c->ch_offset_i2c + i2c->dev_comp->regs[reg]);
 }
 
 static void mtk_i2c_writew(struct mtk_i2c *i2c, u16 val,
 			   enum I2C_REGS_OFFSET reg)
 {
-	writew(val, i2c->base + i2c->dev_comp->regs[reg]);
+	writew(val, i2c->base + i2c->ch_offset_i2c + i2c->dev_comp->regs[reg]);
 }
 
 static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
@@ -615,7 +643,15 @@ static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
 	intr_stat_reg = mtk_i2c_readw(i2c, OFFSET_INTR_STAT);
 	mtk_i2c_writew(i2c, intr_stat_reg, OFFSET_INTR_STAT);
 
-	if (i2c->dev_comp->apdma_sync) {
+	/*
+	 * SCP channel: the completion interrupt lands in the SCP/CCU
+	 * interrupt controller; route it to the AP (vendor mtk_i2c_init_hw).
+	 */
+	if (i2c->is_scp_channel)
+		mtk_i2c_writew(i2c, I2C_CCU_INTR_EN | I2C_MCU_INTR_EN,
+			       OFFSET_MCU_INTR);
+
+	if (i2c->dev_comp->apdma_sync && !i2c->is_scp_channel) {
 		writel(I2C_DMA_WARM_RST, i2c->pdmabase + OFFSET_RST);
 		udelay(10);
 		writel(I2C_DMA_CLR_FLAG, i2c->pdmabase + OFFSET_RST);
@@ -1256,6 +1292,65 @@ static void i2c_dump_register(struct mtk_i2c *i2c)
 		readl(i2c->pdmabase + OFFSET_RX_4G_MODE));
 }
 
+/*
+ * MT6991 SCP I2C: the register window of this channel only answers while
+ * the SCP (or its VLP domain) is awake, so bracket every transfer with the
+ * vendor's wake handshake: set the wake bit, poll the sleep-status until
+ * the domain reports awake, then release.
+ */
+static void scp_wake_request(struct mtk_i2c *i2c)
+{
+	unsigned long flags;
+	unsigned int delay = SCP_WAKE_TIMEOUT;
+	u32 reg;
+
+	if (!i2c->wake_scp_check_en || !i2c->vlpcfg_base_va)
+		return;
+
+	spin_lock_irqsave(&i2c->scp_wake_lock, flags);
+
+	writel(readl(i2c->vlpcfg_base_va + i2c->sleep_reg) | i2c->wakeup_mask,
+	       i2c->vlpcfg_base_va + i2c->sleep_reg);
+
+	while (delay--) {
+		reg = readl(i2c->vlpcfg_base_va + i2c->sleep_stat);
+		if ((reg & i2c->not_in_sleep_mask) == i2c->not_in_sleep_mask)
+			break;
+		udelay(20);
+	}
+	if ((reg & i2c->not_in_sleep_mask) != i2c->not_in_sleep_mask)
+		dev_dbg(i2c->dev, "wait scp wakeup timeout, sleep_stat=0x%x\n",
+			reg);
+
+	writel(readl(i2c->vlpcfg_base_va + i2c->sleep_reg) |
+	       (i2c->wakeup_mask | i2c->wakeup_pre_mask),
+	       i2c->vlpcfg_base_va + i2c->sleep_reg);
+	writel(readl(i2c->vlpcfg_base_va + i2c->sleep_reg) &
+	       ~i2c->wakeup_mask,
+	       i2c->vlpcfg_base_va + i2c->sleep_reg);
+
+	i2c->scp_wake_count++;
+	spin_unlock_irqrestore(&i2c->scp_wake_lock, flags);
+}
+
+static void scp_wake_release(struct mtk_i2c *i2c)
+{
+	unsigned long flags;
+
+	if (!i2c->wake_scp_check_en || !i2c->vlpcfg_base_va)
+		return;
+
+	spin_lock_irqsave(&i2c->scp_wake_lock, flags);
+	if (i2c->scp_wake_count > 0) {
+		i2c->scp_wake_count--;
+		if (!i2c->scp_wake_count)
+			writel(readl(i2c->vlpcfg_base_va + i2c->sleep_reg) &
+			       ~i2c->wakeup_pre_mask,
+			       i2c->vlpcfg_base_va + i2c->sleep_reg);
+	}
+	spin_unlock_irqrestore(&i2c->scp_wake_lock, flags);
+}
+
 static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 			       int num, int left_num)
 {
@@ -1271,16 +1366,27 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	u8 *dma_wr_buf = NULL;
 	dma_addr_t rpaddr = 0;
 	dma_addr_t wpaddr = 0;
+	bool use_fifo;
+	u32 fifo_data_len;
+	int poll_cnt;
 	int ret;
 
 	i2c->irq_stat = 0;
+
+	/*
+	 * The SCP channel shares the APDMA with the SCP firmware, so it must
+	 * not program the DMA engine: everything goes through the 16-byte
+	 * FIFO.  MT6681 register transfers are 2-byte addr + <=4-byte data,
+	 * well within the FIFO.
+	 */
+	use_fifo = i2c->is_scp_channel;
 
 	if (i2c->auto_restart)
 		restart_flag = I2C_RS_TRANSFER;
 
 	reinit_completion(&i2c->msg_complete);
 
-	if (i2c->dev_comp->apdma_sync &&
+	if (!use_fifo && i2c->dev_comp->apdma_sync &&
 	    i2c->op != I2C_MASTER_WRRD && num > 1) {
 		mtk_i2c_writew(i2c, 0x00, OFFSET_DEBUGCTRL);
 		writel(I2C_DMA_HANDSHAKE_RST | I2C_DMA_WARM_RST,
@@ -1310,6 +1416,8 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	if (i2c->op == I2C_MASTER_WRRD)
 		control_reg |= I2C_CONTROL_DIR_CHANGE | I2C_CONTROL_RS;
 
+	if (use_fifo)
+		control_reg &= ~I2C_CONTROL_DMA_EN;
 	mtk_i2c_writew(i2c, control_reg, OFFSET_CONTROL);
 
 	addr_reg = i2c_8bit_addr_from_msg(msgs);
@@ -1345,14 +1453,29 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 		mtk_i2c_writew(i2c, num, OFFSET_TRANSAC_LEN);
 	}
 
-	if (i2c->dev_comp->apdma_sync) {
+	if (i2c->dev_comp->apdma_sync && !use_fifo) {
 		dma_sync = I2C_DMA_SKIP_CONFIG | I2C_DMA_ASYNC_MODE;
 		if (i2c->op == I2C_MASTER_WRRD)
 			dma_sync |= I2C_DMA_DIR_CHANGE;
 	}
 
-	/* Prepare buffer data to start transfer */
-	if (i2c->op == I2C_MASTER_RD) {
+	/*
+	 * FIFO mode: push the write payload into DATA_PORT before starting
+	 * (vendor fills the FIFO for every op but RD); reads pull the data
+	 * out of DATA_PORT after the completion interrupt.
+	 */
+	if (use_fifo) {
+		if (i2c->op == I2C_MASTER_WR || i2c->op == I2C_MASTER_WRRD) {
+			int n = msgs->len;
+			u8 *b = msgs->buf;
+
+			while (n--)
+				writeb(*b++, i2c->base + i2c->ch_offset_i2c +
+				       i2c->dev_comp->regs[OFFSET_DATA_PORT]);
+		}
+	} else if (i2c->op == I2C_MASTER_RD) {
+		writel(I2C_DMA_INT_FLAG_NONE, i2c->pdmabase + OFFSET_INT_FLAG);
+		writel(I2C_DMA_CON_RX | dma_sync, i2c->pdmabase + OFFSET_CON);
 		writel(I2C_DMA_INT_FLAG_NONE, i2c->pdmabase + OFFSET_INT_FLAG);
 		writel(I2C_DMA_CON_RX | dma_sync, i2c->pdmabase + OFFSET_CON);
 
@@ -1451,7 +1574,8 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 		writel((msgs + 1)->len, i2c->pdmabase + OFFSET_RX_LEN);
 	}
 
-	writel(I2C_DMA_START_EN, i2c->pdmabase + OFFSET_EN);
+	if (!use_fifo)
+		writel(I2C_DMA_START_EN, i2c->pdmabase + OFFSET_EN);
 
 	if (!i2c->auto_restart) {
 		start_reg = I2C_TRANSAC_START;
@@ -1460,6 +1584,20 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 		if (left_num >= 1)
 			start_reg |= I2C_RS_MUL_CNFG;
 	}
+
+	if (use_fifo && i2c->op != I2C_MASTER_RD) {
+		/* vendor: wait until the FIFO has swallowed the payload */
+		for (poll_cnt = 0; poll_cnt < 10; poll_cnt++) {
+			fifo_data_len = mtk_i2c_readw(i2c, OFFSET_FIFO_STAT) &
+					I2C_FIFO_DATA_LEN_MASK;
+			if (msgs->len == fifo_data_len)
+				break;
+		}
+		if (poll_cnt == 10)
+			dev_dbg(i2c->dev, "fifo status 0x%x not ready\n",
+				fifo_data_len);
+	}
+
 	mtk_i2c_writew(i2c, start_reg, OFFSET_START);
 
 	ret = wait_for_completion_timeout(&i2c->msg_complete,
@@ -1469,7 +1607,23 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	mtk_i2c_writew(i2c, ~(restart_flag | I2C_HS_NACKERR | I2C_ACKERR |
 			    I2C_ARB_LOST | I2C_TRANSAC_COMP), OFFSET_INTR_MASK);
 
-	if (i2c->op == I2C_MASTER_WR) {
+	if (use_fifo) {
+		if (i2c->op == I2C_MASTER_RD) {
+			int n = msgs->len;
+			u8 *b = msgs->buf;
+
+			while (n--)
+				*b++ = readb(i2c->base + i2c->ch_offset_i2c +
+					     i2c->dev_comp->regs[OFFSET_DATA_PORT]);
+		} else if (i2c->op == I2C_MASTER_WRRD) {
+			int n = (msgs + 1)->len;
+			u8 *b = (msgs + 1)->buf;
+
+			while (n--)
+				*b++ = readb(i2c->base + i2c->ch_offset_i2c +
+					     i2c->dev_comp->regs[OFFSET_DATA_PORT]);
+		}
+	} else if (i2c->op == I2C_MASTER_WR) {
 		dma_unmap_single(i2c->dev, wpaddr,
 				 msgs->len, DMA_TO_DEVICE);
 
@@ -1525,6 +1679,8 @@ static int mtk_i2c_transfer(struct i2c_adapter *adap,
 	ret = clk_bulk_enable(I2C_MT65XX_CLK_MAX, i2c->clocks);
 	if (ret)
 		goto err_regulator;
+
+	scp_wake_request(i2c);
 
 	if (!i2c->regs_dumped) {
 		i2c->regs_dumped = true;
@@ -1583,6 +1739,7 @@ static int mtk_i2c_transfer(struct i2c_adapter *adap,
 	ret = num;
 
 err_exit:
+	scp_wake_release(i2c);
 	clk_bulk_disable(I2C_MT65XX_CLK_MAX, i2c->clocks);
 err_regulator:
 	if (i2c->adap.bus_regulator)
@@ -1655,6 +1812,16 @@ static int mtk_i2c_parse_dt(struct device_node *np, struct mtk_i2c *i2c)
 	i2c->disable_speed_compensate =
 		of_property_read_bool(np, "mediatek,disable-speed-compensate");
 
+	/* MT6991 multi-host channel support */
+	of_property_read_u32(np, "ch-offset-i2c", &i2c->ch_offset_i2c);
+	i2c->i2c_offset_scp = I2C_OFFSET_SCP;
+	of_property_read_u32(np, "i2c-offset-scp", &i2c->i2c_offset_scp);
+	i2c->is_scp_channel = (i2c->ch_offset_i2c == i2c->i2c_offset_scp &&
+			       i2c->ch_offset_i2c != 0);
+	i2c->wake_scp_check_en = i2c->is_scp_channel &&
+		of_property_read_bool(np, "mediatek,wake-scp-check-en");
+	spin_lock_init(&i2c->scp_wake_lock);
+
 	i2c_parse_fw_timings(i2c->dev, &i2c->timing_info, true);
 
 	return 0;
@@ -1664,6 +1831,7 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	struct mtk_i2c *i2c;
+	struct device_node *np = pdev->dev.of_node;
 	int i, irq, speed_clk;
 
 	i2c = devm_kzalloc(&pdev->dev, sizeof(*i2c), GFP_KERNEL);
@@ -1747,13 +1915,69 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 
 	strscpy(i2c->adap.name, I2C_DRV_NAME, sizeof(i2c->adap.name));
 
-	mtk_i2c_set_speed(i2c, clk_get_rate(i2c->clocks[speed_clk].clk));
+	/*
+	 * SCP channel: the source clock lives in the VLP domain and is not
+	 * modelled by the CCF, so the board describes it with "clk-src-in-hz"
+	 * (vendor does the same for ch_offset == i2c_offset_scp).
+	 */
+	if (i2c->is_scp_channel) {
+		u32 src_hz = 0;
+
+		of_property_read_u32(np, "clk-src-in-hz", &src_hz);
+		if (!src_hz) {
+			dev_err(&pdev->dev, "scp i2c needs clk-src-in-hz\n");
+			return -EINVAL;
+		}
+		mtk_i2c_set_speed(i2c, src_hz);
+	} else {
+		mtk_i2c_set_speed(i2c, clk_get_rate(i2c->clocks[speed_clk].clk));
+	}
 
 	dev_info(&pdev->dev,
 		 "parent_clk=%lu target=%u clk_src_div=%u inter_clk_div=%u timing=0x%x ltiming=0x%x\n",
 		 clk_get_rate(i2c->clocks[speed_clk].clk), i2c->speed_hz,
 		 i2c->clk_src_div, i2c->ac_timing.inter_clk_div,
 		 i2c->timing_reg, i2c->ltiming_reg);
+
+	if (i2c->wake_scp_check_en) {
+		u32 vlpcfg = 0;
+
+		if (of_property_read_u32(np, "vlpcfg-base", &vlpcfg) ||
+		    !vlpcfg) {
+			dev_err(&pdev->dev, "scp wake needs vlpcfg-base\n");
+			return -EINVAL;
+		}
+
+		/*
+		 * ioremap, not devm: the wake window is shared between
+		 * channels, keep it simple with an unconditional mapping.
+		 */
+		i2c->vlpcfg_base_va = devm_ioremap(&pdev->dev, vlpcfg, 0x1000);
+		if (!i2c->vlpcfg_base_va)
+			return -ENOMEM;
+
+		if (of_property_read_u32_index(np, "vlp-scp-sleep", 0,
+					       &i2c->sleep_reg) ||
+		    of_property_read_u32_index(np, "vlp-scp-sleep", 1,
+					       &i2c->wakeup_mask) ||
+		    of_property_read_u32_index(np, "vlp-scp-sleep", 2,
+					       &i2c->wakeup_pre_mask) ||
+		    of_property_read_u32_index(np, "vlp-scp-sleep-stat", 0,
+					       &i2c->sleep_stat) ||
+		    of_property_read_u32_index(np, "vlp-scp-sleep-stat", 1,
+					       &i2c->not_in_sleep_mask)) {
+			dev_err(&pdev->dev, "bad vlp-scp-sleep(-stat)\n");
+			return -EINVAL;
+		}
+		i2c->use_l2_slp_stat =
+			of_property_read_bool(np, "mediatek,use-l2-slp-stat");
+		if (i2c->use_l2_slp_stat &&
+		    of_property_read_u32_index(np, "vlp-scp-sleep-stat", 2,
+					       &i2c->l2_slp_stat_mask)) {
+			dev_err(&pdev->dev, "bad vlp-scp-sleep-stat l2 mask\n");
+			return -EINVAL;
+		}
+	}
 
 	if (i2c->dev_comp->max_dma_support > 32) {
 		ret = dma_set_mask(&pdev->dev,

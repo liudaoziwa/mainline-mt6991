@@ -437,6 +437,15 @@ CONFIG_SND_SOC_MT8196_RMX6688=y
 CONFIG_SND_SOC_MTK_SP_SPK_AMP=y
 CONFIG_SND_SOC_TFA9874=y
 
+# --- Audio: MT6681 microphone codec ---------------------------------------
+# MT6681 is the audio companion PMIC on the SCP I2C1 multi-host controller
+# (drivers/i2c/busses/i2c-mt65xx.c grew the MT6991 SCP-channel support:
+# ch-offset register window, FIFO mode, SCP wake handshake).  Its ADC mics
+# reach the AFE over MTKAIF.  Built-in so the codec DAI is registered
+# before the machine card probes.
+CONFIG_MFD_MT6681=y
+CONFIG_SND_SOC_MT6681=y
+
 # --- Other-SoC trim ---------------------------------------------------------
 # The phone is MT6991 only, but the arm64 defconfig enables platform support
 # for every other SoC family.  Their drivers are gated behind their ARCH_*

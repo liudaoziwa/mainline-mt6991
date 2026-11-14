@@ -1140,6 +1140,18 @@ config MFD_MT6370
 	  This driver can also be built as a module. If so, the module
 	  will be called "mt6370".
 
+config MFD_MT6681
+	tristate "MediaTek MT6681 PMIC Support"
+	select MFD_CORE
+	select REGMAP_I2C
+	depends on I2C
+	help
+	  Say yes here to add support for MediaTek MT6681 PMIC. This is the
+	  audio codec companion PMIC used on MT6991 (Dimensity 9400+) boards.
+	  It provides the register map for the codec, AUXADC and eFuse
+	  children. Additional drivers must be enabled in order to use the
+	  audio functionality.
+
 config MFD_MT6397
 	tristate "MediaTek MT6397 PMIC Support"
 	select MFD_CORE
