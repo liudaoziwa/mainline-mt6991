@@ -75,6 +75,9 @@ struct mtk_crtc {
 	spinlock_t			config_lock;
 
 	struct hrtimer			vblank_timer;
+	/* True once a mutex EOF IRQ has been seen; the timer then stays off. */
+	bool				mutex_irq_seen;
+	ktime_t				last_mutex_irq;
 
 	struct mtk_ddp_comp		*ddp_comp[];
 };
@@ -714,6 +717,67 @@ static u64 mtk_crtc_vblank_period_ns(struct mtk_crtc *mtk_crtc)
 	return DIV_ROUND_CLOSEST_ULL(NSEC_PER_SEC, vrefresh);
 }
 
+static void mtk_crtc_vblank(struct mtk_crtc *mtk_crtc)
+{
+	struct mtk_drm_private *priv = mtk_crtc->base.dev->dev_private;
+
+	if (!priv->data->shadow_register && !mtk_crtc->cmdq_client.chan)
+		mtk_crtc_ddp_config(&mtk_crtc->base, NULL);
+
+	mtk_drm_finish_page_flip(mtk_crtc);
+}
+
+static enum hrtimer_restart mtk_crtc_vblank_timer_cb(struct hrtimer *timer)
+{
+	struct mtk_crtc *mtk_crtc = container_of(timer, struct mtk_crtc, vblank_timer);
+
+	if (!mtk_crtc->enabled)
+		return HRTIMER_NORESTART;
+
+	if (mtk_crtc->mutex_irq_seen) {
+		/* Watchdog: if the mutex IRQ goes quiet (masked/failed),
+		 * fall back to the timer instead of freezing the display. */
+		if (!ktime_before(ktime_get(),
+				  ktime_add_ms(mtk_crtc->last_mutex_irq, 50))) {
+			mtk_crtc->mutex_irq_seen = false;
+			dev_warn(mtk_crtc->base.dev->dev,
+				 "mutex irq stalled, timer resumed\n");
+		} else {
+			hrtimer_forward_now(timer, ktime_set(0, 100000000));
+			return HRTIMER_RESTART;
+		}
+	}
+
+	mtk_crtc_vblank(mtk_crtc);
+
+	hrtimer_forward_now(timer,
+			    ktime_set(0, mtk_crtc_vblank_period_ns(mtk_crtc)));
+	return HRTIMER_RESTART;
+}
+
+/*
+ * Runs from the threaded mutex IRQ handler, so sleeping locks are fine here.
+ * The vendor's mutex EOF interrupt is the real frame-boundary source; the
+ * timer above is only a fallback for boards where the IRQ is not routed.
+ */
+static void mtk_crtc_mutex_irq(void *data)
+{
+	struct mtk_crtc *mtk_crtc = data;
+
+	mtk_crtc->last_mutex_irq = ktime_get();
+
+	if (!mtk_crtc->mutex_irq_seen) {
+		mtk_crtc->mutex_irq_seen = true;
+		/* Keep the timer alive as a slow watchdog. */
+		hrtimer_start(&mtk_crtc->vblank_timer,
+			      ktime_set(0, 100000000), HRTIMER_MODE_REL);
+		dev_info(mtk_crtc->base.dev->dev,
+			 "mutex irq drives vblank, timer in watchdog mode\n");
+	}
+
+	mtk_crtc_vblank(mtk_crtc);
+}
+
 static int mtk_crtc_enable_vblank(struct drm_crtc *crtc)
 {
 	struct mtk_crtc *mtk_crtc = to_mtk_crtc(crtc);
@@ -721,30 +785,19 @@ static int mtk_crtc_enable_vblank(struct drm_crtc *crtc)
 
 	mtk_ddp_comp_enable_vblank(comp);
 
+	/* Timer first: safe fallback until the mutex IRQ proves it fires. */
+	mtk_crtc->mutex_irq_seen = false;
+	mtk_crtc->last_mutex_irq = ktime_get();
 	hrtimer_start(&mtk_crtc->vblank_timer,
 		      ktime_set(0, mtk_crtc_vblank_period_ns(mtk_crtc)),
 		      HRTIMER_MODE_REL);
 
+	if (mtk_crtc->mutex &&
+	    !mtk_mutex_register_irq_cb(mtk_crtc->mutex, mtk_crtc_mutex_irq,
+				       mtk_crtc))
+		mtk_mutex_irq_enable(mtk_crtc->mutex, true);
+
 	return 0;
-}
-
-static enum hrtimer_restart mtk_crtc_vblank_timer_cb(struct hrtimer *timer)
-{
-	struct mtk_crtc *mtk_crtc = container_of(timer, struct mtk_crtc, vblank_timer);
-	struct mtk_drm_private *priv = mtk_crtc->base.dev->dev_private;
-
-	if (!priv->data->shadow_register && !mtk_crtc->cmdq_client.chan)
-		mtk_crtc_ddp_config(&mtk_crtc->base, NULL);
-
-	mtk_drm_finish_page_flip(mtk_crtc);
-
-	/* Keep running while the CRTC is up */
-	if (mtk_crtc->enabled) {
-		hrtimer_forward_now(timer,
-				    ktime_set(0, mtk_crtc_vblank_period_ns(mtk_crtc)));
-		return HRTIMER_RESTART;
-	}
-	return HRTIMER_NORESTART;
 }
 
 static void mtk_crtc_disable_vblank(struct drm_crtc *crtc)
@@ -752,7 +805,10 @@ static void mtk_crtc_disable_vblank(struct drm_crtc *crtc)
 	struct mtk_crtc *mtk_crtc = to_mtk_crtc(crtc);
 	struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[0];
 
+	if (mtk_crtc->mutex)
+		mtk_mutex_irq_enable(mtk_crtc->mutex, false);
 	hrtimer_cancel(&mtk_crtc->vblank_timer);
+	mtk_crtc->mutex_irq_seen = false;
 	mtk_ddp_comp_disable_vblank(comp);
 }
 

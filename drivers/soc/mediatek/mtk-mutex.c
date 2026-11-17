@@ -4,6 +4,8 @@
  */
 
 #include <linux/clk.h>
+#include <linux/interrupt.h>
+#include <linux/jiffies.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -24,6 +26,10 @@
 #define MT8183_MUTEX0_SOF0			0x2c
 
 #define DISP_REG_MUTEX_EN(n)			(0x20 + 0x20 * (n))
+#define DISP_REG_MUTEX_INTEN			0x00
+#define DISP_REG_MUTEX_INTSTA			0x04
+#define MTK_MUTEX_INT_MASK			(0xffff | (0xffff << 16))
+#define MTK_MUTEX_EOF_BIT(id)			BIT((id) + 16)
 #define DISP_REG_MUTEX(n)			(0x24 + 0x20 * (n))
 #define DISP_REG_MUTEX_RST(n)			(0x28 + 0x20 * (n))
 /*
@@ -362,10 +368,23 @@ struct mtk_mutex_ctx {
 	struct device			*dev;
 	struct clk			*clk;
 	void __iomem			*regs;
+	/* Block that actually drives the mutex interrupt line (MT6991: the
+	 * primary mutex at 0x32020000; the side block holds the status). */
+	/* Additional mutex blocks (primary + ovlsys0/1) that may drive
+	 * the shared mutex IRQ line. */
+	void __iomem			*irq_regs[3];
+	/* Display IRQ router (vdisp_ao): routes internal display IRQs to GICs */
+	void __iomem			*vdisp_ao_regs;
+	bool				vdisp_ao_inited;
 	struct mtk_mutex		mutex[MTK_MUTEX_MAX_HANDLES];
 	const struct mtk_mutex_data	*data;
 	phys_addr_t			addr;
 	struct cmdq_client_reg		cmdq_reg;
+	int				irq;
+	void				(*irq_cb)(void *data);
+	void				*irq_cb_data;
+	unsigned long			irq_jiffies;
+	unsigned int			irq_count;
 };
 
 static const u8 mt2701_mutex_mod[DDP_COMPONENT_ID_MAX] = {
@@ -871,6 +890,139 @@ void mtk_mutex_put(struct mtk_mutex *mutex)
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_put);
 
+static irqreturn_t mtk_mutex_irq(int irq, void *data)
+{
+	struct mtk_mutex_ctx *mtx = data;
+	u32 sta;
+	int i;
+
+	sta = readl_relaxed(mtx->regs + DISP_REG_MUTEX_INTSTA);
+	if (!(sta & MTK_MUTEX_INT_MASK))
+		return IRQ_NONE;
+
+	/*
+	 * The status register is write-0-to-clear: writing zeros to the
+	 * handled bits (i.e. ~sta) clears them and leaves the rest alone.
+	 * The second (primary) block drives the IRQ line and is cleared
+	 * wholesale, like the vendor driver does.
+	 */
+	writel_relaxed(~sta, mtx->regs + DISP_REG_MUTEX_INTSTA);
+	for (i = 0; i < ARRAY_SIZE(mtx->irq_regs); i++)
+		if (mtx->irq_regs[i])
+			writel_relaxed(0, mtx->irq_regs[i] + DISP_REG_MUTEX_INTSTA);
+
+	if (time_after(jiffies, mtx->irq_jiffies + HZ)) {
+		mtx->irq_jiffies = jiffies;
+		mtx->irq_count = 0;
+	} else if (++mtx->irq_count > 5000) {
+		/* Safety valve: a stuck line would otherwise livelock. */
+		writel_relaxed(0, mtx->regs + DISP_REG_MUTEX_INTEN);
+		for (i = 0; i < ARRAY_SIZE(mtx->irq_regs); i++)
+			if (mtx->irq_regs[i])
+				writel_relaxed(0, mtx->irq_regs[i] + DISP_REG_MUTEX_INTEN);
+		if (mtx->vdisp_ao_regs)
+			writel_relaxed(0, mtx->vdisp_ao_regs + 0x00);
+		pr_err_ratelimited("%s: mutex irq storm, masked\n", __func__);
+		return IRQ_HANDLED;
+	}
+
+	if (sta & (MTK_MUTEX_INT_MASK & ~0xffff))
+		return IRQ_WAKE_THREAD;
+
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t mtk_mutex_irq_thread(int irq, void *data)
+{
+	struct mtk_mutex_ctx *mtx = data;
+
+	if (mtx->irq_cb)
+		mtx->irq_cb(mtx->irq_cb_data);
+
+	return IRQ_HANDLED;
+}
+
+/*
+ * The display IRQs (mutex/OVL/DSI) do not reach the GIC directly: vdisp_ao is
+ * a router whose INT_SEL_G0..G6 bytes select the GIC for each internal IRQ
+ * (byte value = GIC - 450).  The vendor programs the identity mapping
+ * (BIT_n -> GIC 450+n); without it the mutex EOF never reaches GIC 451 and
+ * the display driver has to fake vblanks with a timer.
+ */
+static void __maybe_unused mtk_mutex_vdisp_ao_init(struct mtk_mutex_ctx *mtx)
+{
+	static const u32 sel[7] = {
+		0x03020100, 0x07060504, 0x0b0a0908, 0x0f0e0d0c,
+		0x13121110, 0x17161514, 0x00001918,
+	};
+	int i;
+
+	if (!mtx->vdisp_ao_regs || mtx->vdisp_ao_inited)
+		return;
+
+	/* CPU_INTEN only: per-IRQ routing, no merge. */
+	writel_relaxed(1, mtx->vdisp_ao_regs + 0x00);
+	for (i = 0; i < ARRAY_SIZE(sel); i++)
+		writel_relaxed(sel[i], mtx->vdisp_ao_regs + 0x20 + 4 * i);
+	mtx->vdisp_ao_inited = true;
+}
+
+int mtk_mutex_register_irq_cb(struct mtk_mutex *mutex,
+			      void (*cb)(void *data), void *data)
+{
+	struct mtk_mutex_ctx *mtx = container_of(mutex, struct mtk_mutex_ctx,
+						 mutex[mutex->id]);
+
+	if (!mtx->irq)
+		return -ENXIO;
+
+	mtx->irq_cb = cb;
+	mtx->irq_cb_data = data;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mtk_mutex_register_irq_cb);
+
+int mtk_mutex_irq_enable(struct mtk_mutex *mutex, bool enable)
+{
+	struct mtk_mutex_ctx *mtx = container_of(mutex, struct mtk_mutex_ctx,
+						 mutex[mutex->id]);
+	u32 en;
+	int i;
+
+	if (!mtx->irq)
+		return -ENXIO;
+
+	/*
+	 * The vdisp_ao routing is implemented but disabled: enabling it makes
+	 * the mutex EOF line fire, but the vdisp_ao selected-status/ack leaves
+	 * the line asserted (the kernel then disables it as spurious).  Keep
+	 * the timer path until the vdisp_ao ack is understood; see
+	 * doc/CONTINUATION.md §1.2.7.1.
+	 */
+	(void)mtk_mutex_vdisp_ao_init;
+
+	en = readl_relaxed(mtx->regs + DISP_REG_MUTEX_INTEN);
+	if (enable)
+		en |= MTK_MUTEX_EOF_BIT(mutex->id);
+	else
+		en &= ~MTK_MUTEX_EOF_BIT(mutex->id);
+	writel_relaxed(en, mtx->regs + DISP_REG_MUTEX_INTEN);
+
+	for (i = 0; i < ARRAY_SIZE(mtx->irq_regs); i++) {
+		if (!mtx->irq_regs[i])
+			continue;
+		en = readl_relaxed(mtx->irq_regs[i] + DISP_REG_MUTEX_INTEN);
+		if (enable)
+			en |= MTK_MUTEX_EOF_BIT(mutex->id);
+		else
+			en &= ~MTK_MUTEX_EOF_BIT(mutex->id);
+		writel_relaxed(en, mtx->irq_regs[i] + DISP_REG_MUTEX_INTEN);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mtk_mutex_irq_enable);
+
 int mtk_mutex_prepare(struct mtk_mutex *mutex)
 {
 	struct mtk_mutex_ctx *mtx = container_of(mutex, struct mtk_mutex_ctx,
@@ -1119,6 +1271,40 @@ static int mtk_mutex_probe(struct platform_device *pdev)
 		return PTR_ERR(mtx->regs);
 	}
 	mtx->addr = regs->start;
+
+	for (i = 0; i < ARRAY_SIZE(mtx->irq_regs); i++) {
+		mtx->irq_regs[i] = devm_platform_ioremap_resource(pdev, i + 1);
+		if (IS_ERR(mtx->irq_regs[i]))
+			mtx->irq_regs[i] = NULL;
+	}
+
+	/* The vdisp_ao syscon already owns this region, so map it without an
+	 * exclusive request (devm_ioremap instead of ..._resource). */
+	{
+		struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 4);
+
+		if (res) {
+			mtx->vdisp_ao_regs = devm_ioremap(dev, res->start,
+							  resource_size(res));
+			if (!mtx->vdisp_ao_regs)
+				dev_warn(dev, "failed to map vdisp_ao\n");
+		}
+	}
+
+	mtx->irq = platform_get_irq_optional(pdev, 0);
+	if (mtx->irq > 0) {
+		ret = devm_request_threaded_irq(dev, mtx->irq,
+						mtk_mutex_irq,
+						mtk_mutex_irq_thread,
+						IRQF_ONESHOT,
+						dev_name(dev), mtx);
+		if (ret) {
+			dev_warn(dev, "failed to request mutex irq: %d\n", ret);
+			mtx->irq = 0;
+		} else {
+			dev_info(dev, "mutex irq %d registered\n", mtx->irq);
+		}
+	}
 
 	/* CMDQ is optional */
 	ret = cmdq_dev_get_client_reg(dev, &mtx->cmdq_reg, 0);

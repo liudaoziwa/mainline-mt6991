@@ -78,6 +78,10 @@ void mtk_mutex_disable(struct mtk_mutex *mutex);
 void mtk_mutex_remove_comp(struct mtk_mutex *mutex,
 			   enum mtk_ddp_comp_id id);
 void mtk_mutex_unprepare(struct mtk_mutex *mutex);
+
+int mtk_mutex_register_irq_cb(struct mtk_mutex *mutex,
+			      void (*cb)(void *data), void *data);
+int mtk_mutex_irq_enable(struct mtk_mutex *mutex, bool enable);
 void mtk_mutex_put(struct mtk_mutex *mutex);
 void mtk_mutex_acquire(struct mtk_mutex *mutex);
 void mtk_mutex_release(struct mtk_mutex *mutex);
