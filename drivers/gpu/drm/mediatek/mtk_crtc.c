@@ -698,6 +698,22 @@ static void mtk_crtc_ddp_irq(void *data)
 	mtk_drm_finish_page_flip(mtk_crtc);
 }
 
+/*
+ * The OVL vblank IRQ is not routed on MT6991, so vblanks are synthesised
+ * by a timer.  Its period must follow the active mode: pacing a 120/144 Hz
+ * panel off a hardcoded 60 Hz tick desynchronises the compositor from the
+ * scanout and makes window drags stutter and smear.
+ */
+static u64 mtk_crtc_vblank_period_ns(struct mtk_crtc *mtk_crtc)
+{
+	unsigned int vrefresh = drm_mode_vrefresh(&mtk_crtc->base.mode);
+
+	if (!vrefresh)
+		vrefresh = 60;
+
+	return DIV_ROUND_CLOSEST_ULL(NSEC_PER_SEC, vrefresh);
+}
+
 static int mtk_crtc_enable_vblank(struct drm_crtc *crtc)
 {
 	struct mtk_crtc *mtk_crtc = to_mtk_crtc(crtc);
@@ -706,7 +722,8 @@ static int mtk_crtc_enable_vblank(struct drm_crtc *crtc)
 	mtk_ddp_comp_enable_vblank(comp);
 
 	hrtimer_start(&mtk_crtc->vblank_timer,
-		      ktime_set(0, 16666666), HRTIMER_MODE_REL);
+		      ktime_set(0, mtk_crtc_vblank_period_ns(mtk_crtc)),
+		      HRTIMER_MODE_REL);
 
 	return 0;
 }
@@ -723,7 +740,8 @@ static enum hrtimer_restart mtk_crtc_vblank_timer_cb(struct hrtimer *timer)
 
 	/* Keep running while the CRTC is up */
 	if (mtk_crtc->enabled) {
-		hrtimer_forward_now(timer, ktime_set(0, 16666666));
+		hrtimer_forward_now(timer,
+				    ktime_set(0, mtk_crtc_vblank_period_ns(mtk_crtc)));
 		return HRTIMER_RESTART;
 	}
 	return HRTIMER_NORESTART;

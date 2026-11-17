@@ -80,6 +80,13 @@
 #define GF_REG_LEAKAGE_RT_GPU		0x0094 /* Unknown */
 #define GF_REG_LEAKAGE_RT_STK		0x0098 /* Unknown */
 #define GF_REG_LEAKAGE_RT_SRAM		0x009C /* Unknown */
+#define GF_REG_CUR_CEILING		0x00B4
+#define GF_REG_CUR_C_LIMITER		0x00BC
+
+/* gpufreq_v2.h: enum gpuppm_limiter / return index sentinels */
+#define LIMIT_THERMAL_EB		5
+#define GPUPPM_DEFAULT_IDX		(-1)
+#define GPUPPM_KEEP_IDX			(-3)
 #define GF_REG_LEAKAGE_HT_GPU		0x00A0 /* Unknown */
 #define GF_REG_LEAKAGE_HT_STK		0x00A4 /* Unknown */
 #define GF_REG_LEAKAGE_HT_SRAM		0x00A8 /* Unknown */
@@ -498,17 +505,45 @@ static int mtk_mfg_power_control(struct mtk_mfg *mfg, bool enabled)
 	return mtk_mfg_send_ipi(mfg, &msg);
 }
 
+/*
+ * The GPU and stack OPP tables use different index layouts: the GPU table
+ * lists 1430MHz 24 times (indices 7..30), while the stack table steps down
+ * 26MHz per entry.  Sending the GPU index as the stack index therefore
+ * underclocks the L2 whenever the GPU is below 1430MHz (e.g. GPU 1404 ->
+ * stack 806).  Pick the fastest stack OPP that does not exceed the GPU one.
+ */
+static unsigned int mtk_mfg_stack_idx_for_gpu(struct mtk_mfg *mfg,
+					      unsigned int gpu_idx)
+{
+	unsigned long gpu_freq;
+	unsigned int i;
+
+	if (!mfg->stack_opps || !mfg->num_stack_opps)
+		return gpu_idx;
+
+	gpu_freq = mfg->gpu_opps[gpu_idx].freq;
+	for (i = 0; i < mfg->num_stack_opps; i++) {
+		if (mfg->stack_opps[i].freq <= gpu_freq)
+			return i;
+	}
+
+	return mfg->num_stack_opps - 1;
+}
+
 static int mtk_mfg_set_oppidx(struct mtk_mfg *mfg, unsigned int opp_idx)
 {
 	struct mtk_mfg_ipi_msg msg = {};
+	unsigned int stack_idx;
 	int ret;
 
 	if (opp_idx >= mfg->num_gpu_opps)
 		return -EINVAL;
 
+	stack_idx = mtk_mfg_stack_idx_for_gpu(mfg, opp_idx);
+
 	msg.cmd = CMD_FIX_DUAL_TARGET_OPPIDX;
 	msg.u.dual_commit.gpu_oppidx = opp_idx;
-	msg.u.dual_commit.stack_oppidx = opp_idx;
+	msg.u.dual_commit.stack_oppidx = stack_idx;
 
 	ret = mtk_mfg_send_ipi(mfg, &msg);
 	if (ret) {
@@ -521,6 +556,81 @@ static int mtk_mfg_set_oppidx(struct mtk_mfg *mfg, unsigned int opp_idx)
 
 	return 0;
 }
+
+static int mtk_mfg_set_limit(struct mtk_mfg *mfg, u32 limiter, s32 ceiling,
+			     s32 floor)
+{
+	struct mtk_mfg_ipi_msg msg = {};
+
+	msg.cmd = CMD_SET_LIMIT;
+	msg.u.set_limit.limiter = limiter;
+	msg.u.set_limit.ceiling_info = ceiling;
+	msg.u.set_limit.floor_info = floor;
+
+	return mtk_mfg_send_ipi(mfg, &msg);
+}
+
+/*
+ * The GPUEB powers up with THERMAL_EB limited to OPP 7 (1430MHz), which caps
+ * every turbo OPP (0..6: 1508/1612MHz) even though the OPP table accepts them.
+ * The AP is expected to own this ceiling; release it so the GPU can reach its
+ * rated turbo points.  Thermal policy is applied separately by the AP.
+ */
+static int mtk_mfg_clear_thermal_eb(struct mtk_mfg *mfg)
+{
+	int ret = mtk_mfg_set_limit(mfg, LIMIT_THERMAL_EB,
+				    GPUPPM_DEFAULT_IDX, GPUPPM_KEEP_IDX);
+
+	dev_info(&mfg->pdev->dev,
+		 "THERMAL_EB clear: ret=%d ceiling=%d limiter=%d\n", ret,
+		 (s32)readl(mfg->shared_mem + GF_REG_CUR_CEILING),
+		 (s32)readl(mfg->shared_mem + GF_REG_CUR_C_LIMITER));
+
+	return ret;
+}
+
+static ssize_t gpu_limit_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct mtk_mfg *mfg = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "ceiling=%d limiter=%d opp=%u freq_out=%u\n",
+			  (s32)readl(mfg->shared_mem + GF_REG_CUR_CEILING),
+			  (s32)readl(mfg->shared_mem + GF_REG_CUR_C_LIMITER),
+			  readl(mfg->shared_mem + GF_REG_GPU_OPP_IDX),
+			  readl(mfg->shared_mem + GF_REG_FREQ_OUT_GPU));
+}
+
+static ssize_t gpu_limit_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct mtk_mfg *mfg = dev_get_drvdata(dev);
+	unsigned int lim, ce, fe;
+	char cmd[16];
+
+	if (sscanf(buf, "%15s", cmd) != 1)
+		return -EINVAL;
+
+	if (!strcmp(cmd, "clear")) {
+		mtk_mfg_clear_thermal_eb(mfg);
+	} else if (!strcmp(cmd, "off")) {
+		struct mtk_mfg_ipi_msg msg = {};
+
+		msg.cmd = CMD_SWITCH_LIMIT;
+		msg.u.set_limit.limiter = LIMIT_THERMAL_EB;
+		msg.u.set_limit.ceiling_info = 0;
+		msg.u.set_limit.floor_info = 1;
+		mtk_mfg_send_ipi(mfg, &msg);
+	} else if (sscanf(buf, "set %u %u %u", &lim, &ce, &fe) == 3) {
+		mtk_mfg_set_limit(mfg, lim, ce, fe);
+	} else {
+		return -EINVAL;
+	}
+
+	return count;
+}
+static DEVICE_ATTR_RW(gpu_limit);
 
 static int mtk_mfg_read_opp_tables(struct mtk_mfg *mfg)
 {
@@ -751,6 +861,9 @@ static int mtk_mfg_power_on(struct generic_pm_domain *pd)
 		if (ret)
 			dev_warn(&mfg->pdev->dev, "Failed to set oppidx in %s\n", __func__);
 	}
+
+	if (mfg->gpu_opps)
+		mtk_mfg_clear_thermal_eb(mfg);
 
 	return 0;
 
@@ -1034,6 +1147,11 @@ static int mtk_mfg_probe(struct platform_device *pdev)
 		dev_err_probe(dev, ret, "Error reading OPP tables from EB\n");
 		goto err_power_off;
 	}
+
+	mtk_mfg_clear_thermal_eb(mfg);
+	ret = device_create_file(dev, &dev_attr_gpu_limit);
+	if (ret)
+		dev_warn(dev, "Failed to create gpu_limit attribute\n");
 
 	ret = mtk_mfg_init_clk_provider(mfg);
 	if (ret)

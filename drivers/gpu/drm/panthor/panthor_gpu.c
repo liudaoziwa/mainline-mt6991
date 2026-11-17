@@ -456,6 +456,15 @@ u64 panthor_gpu_get_cycle_count(struct panthor_device *ptdev)
 	return gpu_read64_counter(ptdev->gpu->iomem, GPU_CYCLE_COUNT);
 }
 
+/* Force ACE-lite CPU/GPU coherency.  Non-coherent mode makes the firmware
+ * flush+invalidate the whole L2 at every submission (~0.35ms of fixed GPU
+ * time per frame); with coherency the flush is only needed for buffers the
+ * (non-coherent) display reads, which Mesa requests explicitly.
+ */
+static bool force_coherent;
+module_param(force_coherent, bool, 0444);
+MODULE_PARM_DESC(force_coherent, "Force ACE-lite GPU/CPU coherency");
+
 int panthor_gpu_coherency_init(struct panthor_device *ptdev)
 {
 	BUILD_BUG_ON(GPU_COHERENCY_NONE != DRM_PANTHOR_GPU_COHERENCY_NONE);
@@ -467,6 +476,17 @@ int panthor_gpu_coherency_init(struct panthor_device *ptdev)
 	ptdev->coherent = device_get_dma_attr(ptdev->base.dev) == DEV_DMA_COHERENT;
 	dev_info(ptdev->base.dev, "panthor coherency: dma_attr=%d coherent=%d (forcing non-coherent per vendor system-coherency=0)\n",
 		 device_get_dma_attr(ptdev->base.dev), ptdev->coherent);
+	if (force_coherent &&
+	    (ptdev->gpu_info.coherency_features &
+	     GPU_COHERENCY_PROT_BIT(ACE_LITE))) {
+		ptdev->gpu_info.selected_coherency = GPU_COHERENCY_ACE_LITE;
+		ptdev->coherent = true;
+		panthor_gpu_coherency_set(ptdev);
+		dev_info(ptdev->base.dev,
+			 "panthor: forcing ACE-lite GPU coherency\n");
+		return 0;
+	}
+
 	/*
 	 * MT6991 vendor DT sets system-coherency = <0>: the GPU is NOT
 	 * hardware-coherent with the display.  Force the non-coherent path so
