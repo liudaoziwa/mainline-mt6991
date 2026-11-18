@@ -630,7 +630,8 @@ static int sensorhub_probe_logger_handler(unsigned int id, void *prdata,
 		logger_info.start_addr, logger_info.end_addr,
 		logger_info.buf_maxlen);
 
-	if (logger_info.dram_addr < SCP_TCM_SIZE && tcm_map) {
+	if (tcm_map && IS_ALIGNED(logger_info.dram_addr, 4) &&
+	    logger_info.dram_addr <= SCP_TCM_SIZE - 4) {
 		/*
 		 * v24 proved that publishing the logger dram address into
 		 * this TCM slot makes the firmware assert (mt_logger.c:156)
@@ -638,6 +639,9 @@ static int sensorhub_probe_logger_handler(unsigned int id, void *prdata,
 		 * enabled.  v21 (slot untouched) kept the firmware alive
 		 * through the whole handshake, so inspect only -- never
 		 * write here.  The firmware log is read from its TCM ring.
+		 *
+		 * The address comes from firmware; keep the read inside the
+		 * mapping and 4-byte aligned (an unaligned device read faults).
 		 */
 		pr_info("logger tcm slot 0x%x = 0x%x (untouched)\n",
 			logger_info.dram_addr,

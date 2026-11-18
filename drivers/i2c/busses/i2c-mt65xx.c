@@ -134,6 +134,7 @@ static const char * const i2c_mt65xx_clk_ids[I2C_MT65XX_CLK_MAX] = {
 #define I2C_CCU_INTR_EN			0x2
 #define I2C_MCU_INTR_EN			0x1
 #define I2C_FIFO_DATA_LEN_MASK		0x001f
+#define MTK_I2C_SCP_FIFO_SIZE		16
 #define SCP_WAKE_TIMEOUT		200
 
 enum DMA_REGS_OFFSET {
@@ -1380,6 +1381,16 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	 * well within the FIFO.
 	 */
 	use_fifo = i2c->is_scp_channel;
+
+	/* The SCP channel has no DMA fallback; refuse anything FIFO can't hold. */
+	if (use_fifo &&
+	    (msgs->len > MTK_I2C_SCP_FIFO_SIZE ||
+	     (i2c->op == I2C_MASTER_WRRD &&
+	      (msgs + 1)->len > MTK_I2C_SCP_FIFO_SIZE))) {
+		dev_dbg(i2c->dev, "message too long for SCP FIFO (%d)\n",
+			msgs->len);
+		return -EPERM;
+	}
 
 	if (i2c->auto_restart)
 		restart_flag = I2C_RS_TRANSFER;

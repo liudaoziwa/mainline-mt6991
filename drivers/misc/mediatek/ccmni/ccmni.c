@@ -1199,8 +1199,8 @@ static inline void ccmni_dev_init(struct net_device *dev)
 	dev->tx_queue_len = CCMNI_TX_QUEUE;
 	dev->watchdog_timeo = CCMNI_NETDEV_WDT_TO;
 	/* ccmni is a pure IP device */
-	dev->flags = IFF_NOARP &
-			(~IFF_BROADCAST & ~IFF_MULTICAST);
+	dev->flags |= IFF_NOARP;
+	dev->flags &= ~(IFF_BROADCAST | IFF_MULTICAST);
 	/* not support VLAN */
 	dev->features = NETIF_F_VLAN_CHALLENGED;
 	dev->features |= NETIF_F_GRO_FRAGLIST;
@@ -1255,6 +1255,7 @@ static u32 ccmni_get_capability_from_dts_node(unsigned int hw_type)
 		node = of_find_compatible_node(NULL, NULL, "mediatek,dpmaif");
 		if (node) {
 			ret = of_property_read_u32(node, "mediatek,dpmaif-cap", &capability);
+			of_node_put(node);
 			if (ret < 0) {
 				pr_info("cannot find dpmaif-cap in dts node\n");
 				return -1;
@@ -1266,6 +1267,7 @@ static u32 ccmni_get_capability_from_dts_node(unsigned int hw_type)
 		node = of_find_compatible_node(NULL, NULL, "mediatek,ccci_cldma");
 		if (node) {
 			ret = of_property_read_u32(node, "mediatek,cldma-capability", &capability);
+			of_node_put(node);
 			if (ret < 0) {
 				pr_info("cannot find cldma-cap in dts node\n");
 				return -1;
@@ -1284,12 +1286,16 @@ static u32 ccmni_get_capability_from_dts(void)
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mddriver");
 	if (node) {
+		u32 cap;
+
 		ret = of_property_read_u32(node, "mediatek,mdhif-type", &hw_type);
+		of_node_put(node);
 		if (ret < 0) {
 			pr_info("cannot find mdhif-type in dts file\n");
 			return -1;
 		}
-		return ccmni_get_capability_from_dts_node(hw_type);
+		cap = ccmni_get_capability_from_dts_node(hw_type);
+		return cap;
 	}
 	pr_info("cannot find mddriver\n");
 	return -1;
@@ -1307,7 +1313,7 @@ static int ccmni_init(void)
 
 	capability = ccmni_get_capability_from_dts();
 	if (capability == -1)
-		return -1;
+		return -ENODEV;
 	if (unlikely(capability & MODEM_CAP_CCMNI_DISABLE)) {
 		netdev_info(dev, "no need init ccmni: md_ability=0x%x\n",
 			capability);
@@ -1384,7 +1390,7 @@ static int ccmni_init(void)
 	if (!ctlb->ccmni_wakelock) {
 		netdev_info(dev, "%s %d: init wakeup source fail!",
 			__func__, __LINE__);
-		return -1;
+		return -ENOMEM;
 	}
 
 	/* tuning knob only: never let it gate the whole ccmni data path */
@@ -1398,7 +1404,10 @@ static int ccmni_init(void)
 
 alloc_netdev_fail:
 	if (dev) {
-		free_ccmni_alloc(dev);
+		/*
+		 * free_netdev() runs dev->priv_destructor (free_ccmni_alloc),
+		 * so the instance must not be freed explicitly as well.
+		 */
 		free_netdev(dev);
 		ctlb->ccmni_inst[i] = NULL;
 	}
@@ -1408,7 +1417,7 @@ alloc_netdev_fail:
 		if (!ccmni)
 			continue;
 		unregister_netdev(ccmni->dev);
-		/* free_netdev(ccmni->dev); */
+		free_netdev(ccmni->dev);
 		ctlb->ccmni_inst[j] = NULL;
 	}
 
@@ -1467,8 +1476,14 @@ static int ccmni_rx_callback(unsigned int ccmni_idx, struct sk_buff *skb,
 #endif
 	unsigned int gro_if = 0;
 
+	if (!ccmni_ctl_blk || ccmni_idx >= CCMNI_INTERFACE_NUM)
+		return -EINVAL;
 	ccmni = ccmni_ctl_blk->ccmni_inst[ccmni_idx];
+	if (!ccmni)
+		return -ENODEV;
 	dev = ccmni->dev;
+	if (!dev || !skb || !skb->len)
+		return -EINVAL;
 
 	pkt_type = skb->data[0] & 0xF0;
 

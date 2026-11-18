@@ -5,6 +5,7 @@
 
 #include <linux/i2c.h>
 #include <linux/init.h>
+#include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/mfd/core.h>
 #include <linux/module.h>
@@ -186,9 +187,10 @@ static int mt6681_retry_wait(struct mt6681_pmic_info *mpi)
 		}
 		/* MT6681_ACDIF_MON0[1] : MON_DA_QI_INTERNAL_RSTB */
 		ret = regmap_read(mpi->regmap, MT6681_ACDIF_MON0, &data);
-		dev_info(mpi->dev, "retry wait for RDY (%d) MT6681_ACDIF_MON0 = 0x%x, ret %d\n",
+		dev_dbg(mpi->dev, "retry wait for RDY (%d) MT6681_ACDIF_MON0 = 0x%x, ret %d\n",
 				 i, data, ret);
 		i++;
+		usleep_range(1000, 2000);
 		ktime_get_ts64(&ts64);
 		t2 = timespec64_to_ns(&ts64);
 		t2 = t2 - t1; /* in ns (10^9) */
@@ -366,7 +368,9 @@ static int mt6681_pmic_probe(struct i2c_client *client)
 	mutex_init(&mpi->io_lock);
 
 	dev_info(&client->dev, "+%s() mutex_init\n", __func__);
-	mt6681_codec_gpio_init(mpi);
+	ret = mt6681_codec_gpio_init(mpi);
+	if (ret)
+		dev_warn(&client->dev, "codec gpio init failed: %d\n", ret);
 
 	/* regmap regiser */
 	regmap_config->lock_arg = &mpi->io_lock;

@@ -12,7 +12,7 @@
 | 显示颜色 | 强制 OVL 只 advertise 8-bit(历史原因:24.04 mutter 会选 10-bit XR30;当前 **26.10** 继续沿用 8-bit,颜色正常) |
 | 屏幕亮度 | AE031 面板 DCS `0x51`(非 PWM),自带 `backlight` 设备;保守上限 `0x800`/默认 `0x600`(厂商正常上限 `0xe0e`/硬件 `0xffe`),GNOME 滑块可调 |
 | GPU | panthor / Immortalis-G925:probe、渲染、devfreq/DVFS(338–1612MHz);修了空闲 runtime-PM 循环崩溃 |
-| 音频 / 扬声器 | ✅ **扬声器已出声**:TFA9873×2(i2c6 0x34/0x35)+ AFE `I2SOUT4`。根因是 MT6991 i2c 的 `SLAVE_ADDR1=0x94`(mainline 误写 0x04,导致所有 i2c6 器件 NAK);已补 9873 支持、DPCM `DL1` FE→`I2SOUT4` BE、BE startup 自动打开 `AFE_CONN026/027` 的 `DL1` 连接;`pw-play` 440Hz 实机正常。**耳机/听筒/麦克风仍依赖未移植的 MT6681** |
+| 音频 / 扬声器 | ✅ **扬声器已出声**:TFA9873×2(i2c6 0x34/0x35)+ AFE `I2SOUT4`。根因是 MT6991 i2c 的 `SLAVE_ADDR1=0x94`(mainline 误写 0x04,导致所有 i2c6 器件 NAK);已补 9873 支持、DPCM `DL1` FE→`I2SOUT4` BE、BE startup 自动打开 `AFE_CONN026/027` 的 `DL1` 连接;`pw-play` 440Hz 实机正常。**耳机/听筒/麦克风依赖 MT6681,移植进行中(见下)** |
 | 触摸屏 | Synaptics S3910 (TCM v1, SPI6):单点/多点、量程 12799×27999→1280×2800、边缘校准;固件不自动刷写。AVDD(MT6373 VTP 3.1V)已交给内核:`mt6991-pmic-early` 在 subsys_initcall 用 DT 序列(bare SWINF)拉起,早于 SPI6/syna-tcm 首次 probe,init 不再上电、不再 unbind/rebind |
 | USB-C (host/OTG) | 端口 **host-only**(MTU3 host + mtk-xhci):OTG 转接器下 U 盘/键鼠枚举正常。**MT6379 TCPC 自动 CC 角色切换**(500ms 轮询,PD 窗口须单字节读):待机 DRP toggling;外设(CC=Rd)插入自动开 OTG 5V boost,拔掉自动关并 re-arm;充电器(CC=Rp)插入自动关 boost,5V 充电不受影响。U 盘/充电器交替插拔任意顺序实测可靠(b60,5 个循环零报错)。调试用串口/RNDIS gadget 已退休,eUSB2 repeater phy 链保留 |
 | WiFi | MT6653 (connv3, PCIe HIF):扫描/认证/关联/WPA2 四次握手/联网全部正常;conninfra+connadp+connfem+gen4m+PCIe 全量内建。**日志降噪**:`.is_en_sw_emi_read=FALSE` 关掉那条永不回 MSI 的 CB-DMA debug 读(`halMbuRead` 1698→0、EMI MPU 告警 18→0),`kalIsNoMmioReadReason` 不再成立 ⇒ debug dump 自动回退 MMIO,信息不丢 |
@@ -48,7 +48,7 @@
 | 振动马达 | `awinic,aw8697_haptic` @ i2c5 0x5a(chip id 0x9270 = AW86927);**2026-11-13 已上机**:`aw86927-haptics` 注册,FF 播放时 `GLBRD5 0x00→0x07→0x00`、`DONEI` 置位;仅 EINT 28 未计数(不影响播放) |
 | NFC | `tms,nfc`(THN31)@ i2c13 0x28;未移植 |
 | 红外遥控 | `oplus,kookong_ir_core` / `oplus,kookong_ir_pwm`;未移植 |
-| 耳机 / 听筒 / 麦克风 | MT6681(`scp-i2c1` 0x6b,codec/accdet/auxadc)未移植 ⇒ 耳机检测/录音/通话音频不可用 |
+| 耳机 / 听筒 / 麦克风 | MT6681(`scp-i2c1` 0x6b)移植进行中:MFD+codec、SCP i2c 通道、capture(`UL0`→ADDA)已上机,`arecord` 可打开,但 **MTKAIF 线无数据(录音全零)**;耳机检测/通话音频仍不可用 |
 | 语音通话 / VoLTE | 依赖 modem 语音 + MT6681 通话音频 + IMS/RIL;未做 |
 | 双卡 / DSDS(SIM2) | FDT 有 `oplus,sim_detect`;目前只在单卡上验证过,SIM2/双卡未验证 |
 | USB-C DP Alt Mode / 外接显示 | FDT 有 `usb-dp-selector`/`dptx`/`edp-tx`;当前 USB-C 只做 host 数据,未移植 DP/eDP,外接屏未验证 |

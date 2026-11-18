@@ -166,11 +166,9 @@ static int mt6379_set_aicr(struct mt6379_chg *c, u32 ua)
 {
 	u32 v;
 
-	if (ua < MT6379_AICR_MIN)
-		ua = MT6379_AICR_MIN;
+	if (ua < MT6379_AICR_MIN || ua > MT6379_AICR_MAX)
+		return -EINVAL;
 	v = (ua - MT6379_AICR_MIN) / MT6379_AICR_STEP;
-	if (v > 0xa7)
-		v = 0xa7;
 
 	return regmap_write(c->regmap, MT6379_REG_CHG_IBUS_AICR, v);
 }
@@ -179,11 +177,9 @@ static int mt6379_set_ichg(struct mt6379_chg *c, u32 ua)
 {
 	u32 v;
 
-	if (ua < MT6379_ICHG_MIN)
-		ua = MT6379_ICHG_MIN;
+	if (ua < MT6379_ICHG_MIN || ua > MT6379_ICHG_MAX)
+		return -EINVAL;
 	v = (ua - MT6379_ICHG_MIN) / MT6379_ICHG_STEP;
-	if (v > 0x50)
-		v = 0x50;
 
 	return regmap_write(c->regmap, MT6379_REG_CHG_ICHG, v);
 }
@@ -603,14 +599,21 @@ static int mt6379_chg_set_property(struct power_supply *psy,
 				   const union power_supply_propval *val)
 {
 	struct mt6379_chg *c = power_supply_get_drvdata(psy);
+	int ret;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		ret = mt6379_set_aicr(c, val->intval);
+		if (ret)
+			return ret;
 		c->aicr = val->intval;
-		return mt6379_set_aicr(c, c->aicr);
+		return 0;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
+		ret = mt6379_set_ichg(c, val->intval);
+		if (ret)
+			return ret;
 		c->ichg = val->intval;
-		return mt6379_set_ichg(c, c->ichg);
+		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -725,21 +728,23 @@ static int mt6379_chg_probe(struct spmi_device *sdev)
 	}
 
 	INIT_DELAYED_WORK(&c->poll, mt6379_poll_work);
-	schedule_delayed_work(&c->poll, msecs_to_jiffies(MT6379_POLL_MS));
-
-	dev_info(c->dev, "MT6379 charger registered (AICR %u uA, ICHG %u uA)\n",
-		 c->aicr, c->ichg);
 
 	/*
 	 * Populate child devices that share the MT6379 regmap -- in particular
 	 * the eUSB2 repeater (mtk,mt6379-eusb2-repeater), which is a phy
 	 * provider for the SoC xsphy and whose regmap is dev_get_regmap()'d
-	 * from this SPMI device.
+	 * from this SPMI device.  Do this before arming the poll work so a
+	 * failure here cannot leave the work running against freed memory.
 	 */
 	ret = of_platform_populate(sdev->dev.of_node, NULL, NULL, &sdev->dev);
 	if (ret)
 		return dev_err_probe(c->dev, ret,
 				     "failed to populate MT6379 children\n");
+
+	schedule_delayed_work(&c->poll, msecs_to_jiffies(MT6379_POLL_MS));
+
+	dev_info(c->dev, "MT6379 charger registered (AICR %u uA, ICHG %u uA)\n",
+		 c->aicr, c->ichg);
 
 	return 0;
 }

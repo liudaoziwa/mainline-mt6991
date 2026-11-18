@@ -855,9 +855,17 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	priv->data = of_device_get_match_data(dev);
 	platform_set_drvdata(pdev, priv);
 
-	/* Companion bootloader blend layer (see the repoint in layer_config). */
-	if (priv->data->is_exdma)
-		priv->exdma4_regs = ioremap(0x32870000, 0x1000);
+	/*
+	 * Companion bootloader blend layer (see the repoint in layer_config).
+	 * The block has no DT node, so map its fixed address here; devm keeps
+	 * the mapping tied to the device lifetime.
+	 */
+	if (priv->data->is_exdma) {
+		priv->exdma4_regs = devm_ioremap(dev, 0x32870000, 0x1000);
+		if (!priv->exdma4_regs)
+			return dev_err_probe(dev, -ENOMEM,
+					     "failed to ioremap EXDMA4\n");
+	}
 
 	/*
 	 * The DRM framebuffer is allocated against this device (see

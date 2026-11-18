@@ -69,7 +69,7 @@ struct pmif_bus {
 };
 
 struct pmif {
-	struct pmif_bus bus[PMIF_MAX_BUSES];
+	struct pmif_bus *bus[PMIF_MAX_BUSES];
 	struct ch_reg	chan;
 	const struct pmif_data *data;
 };
@@ -713,9 +713,10 @@ static void mtk_spmi_irq_remove(struct pmif_bus *pbus)
 static int mtk_spmi_bus_probe(struct platform_device *pdev,
 			      struct device_node *node,
 			      const struct pmif_data *pdata,
-			      struct pmif_bus *pbus)
+			      struct pmif_bus **bus_out)
 {
 	struct spmi_controller *ctrl;
+	struct pmif_bus *pbus;
 	int err, idx, bus_id, i;
 
 	if (pdata->num_spmi_buses > 1)
@@ -786,6 +787,9 @@ static int mtk_spmi_bus_probe(struct platform_device *pdev,
 	if (pbus->dom)
 		irq_set_chained_handler_and_data(pbus->irq, mtk_spmi_handle_chained_irq, pbus);
 
+	/* Keep the bus reachable from mtk_spmi_remove(). */
+	*bus_out = pbus;
+
 	return 0;
 
 err_remove_irq:
@@ -817,6 +821,18 @@ static int mtk_spmi_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, arb);
 
+	/*
+	 * Fill the SWINF channel registers before any controller is added:
+	 * spmi_controller_add() registers the child PMIC devices, whose
+	 * drivers issue SPMI transfers during their probe.
+	 */
+	chan_offset = PMIF_CHAN_OFFSET * arb->data->soc_chan;
+	arb->chan.ch_sta = PMIF_SWINF_0_STA + chan_offset;
+	arb->chan.wdata = PMIF_SWINF_0_WDATA_31_0 + chan_offset;
+	arb->chan.rdata = PMIF_SWINF_0_RDATA_31_0 + chan_offset;
+	arb->chan.ch_send = PMIF_SWINF_0_ACC + chan_offset;
+	arb->chan.ch_rdy = PMIF_SWINF_0_VLD_CLR + chan_offset;
+
 	if (!arb->data->num_spmi_buses) {
 		ret = mtk_spmi_bus_probe(pdev, node, arb->data, &arb->bus[cur_bus]);
 		if (ret)
@@ -826,22 +842,31 @@ static int mtk_spmi_probe(struct platform_device *pdev)
 			if (!of_node_name_eq(child, "spmi"))
 				continue;
 
+			if (cur_bus >= PMIF_MAX_BUSES)
+				break;
 			ret = mtk_spmi_bus_probe(pdev, child, arb->data,
 						 &arb->bus[cur_bus]);
 			if (ret)
-				return ret;
+				goto err_cleanup;
 			cur_bus++;
 		}
 	}
 
-	chan_offset = PMIF_CHAN_OFFSET * arb->data->soc_chan;
-	arb->chan.ch_sta = PMIF_SWINF_0_STA + chan_offset;
-	arb->chan.wdata = PMIF_SWINF_0_WDATA_31_0 + chan_offset;
-	arb->chan.rdata = PMIF_SWINF_0_RDATA_31_0 + chan_offset;
-	arb->chan.ch_send = PMIF_SWINF_0_ACC + chan_offset;
-	arb->chan.ch_rdy = PMIF_SWINF_0_VLD_CLR + chan_offset;
-
 	return 0;
+
+err_cleanup:
+	while (cur_bus--) {
+		struct pmif_bus *pbus = arb->bus[cur_bus];
+
+		if (!pbus)
+			continue;
+		mtk_spmi_irq_remove(pbus);
+		spmi_controller_remove(pbus->ctrl);
+		clk_bulk_disable_unprepare(pbus->nclks, pbus->clks);
+		clk_bulk_put(pbus->nclks, pbus->clks);
+		arb->bus[cur_bus] = NULL;
+	}
+	return ret;
 }
 
 static void mtk_spmi_remove(struct platform_device *pdev)
@@ -850,15 +875,16 @@ static void mtk_spmi_remove(struct platform_device *pdev)
 	int i;
 
 	for (i = 0; i < PMIF_MAX_BUSES; i++) {
-		struct pmif_bus *pbus = &arb->bus[i];
+		struct pmif_bus *pbus = arb->bus[i];
 
-		if (!pbus->ctrl)
+		if (!pbus || !pbus->ctrl)
 			continue;
 
 		mtk_spmi_irq_remove(pbus);
 		spmi_controller_remove(pbus->ctrl);
 		clk_bulk_disable_unprepare(pbus->nclks, pbus->clks);
 		clk_bulk_put(pbus->nclks, pbus->clks);
+		arb->bus[i] = NULL;
 	}
 }
 

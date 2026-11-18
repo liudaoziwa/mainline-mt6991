@@ -454,7 +454,7 @@ int fp_hw_reset(struct spidev_data *dev, unsigned int delay_ms) {
     }
 
     gpio_set_value(dev->reset_gpio, 0);
-    mdelay(20);
+    usleep_range(20000, 21000);
     gpio_set_value(dev->reset_gpio, 1);
     if (dev->cs_gpio_set) {
         FP_LOGI(" pull CS up and set CS from gpio to func ");
@@ -462,7 +462,7 @@ int fp_hw_reset(struct spidev_data *dev, unsigned int delay_ms) {
         pinctrl_select_state(dev->pinctrl, dev->pstate_cs_func);
         dev->cs_gpio_set = false;
     }
-    mdelay(delay_ms);
+    msleep(delay_ms);
     return 0;
 }
 

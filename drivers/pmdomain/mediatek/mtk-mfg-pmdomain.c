@@ -13,6 +13,7 @@
 #include <linux/nvmem-provider.h>
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
@@ -283,6 +284,8 @@ struct mtk_mfg {
 	struct mtk_mfg_mbox *gf_mbox;
 	struct mtk_mfg_mbox *slp_mbox;
 	const struct mtk_mfg_variant *variant;
+	/* Serialises synchronous gpufreq IPI transactions. */
+	struct mutex ipi_lock;
 };
 
 struct mtk_mfg_variant {
@@ -447,14 +450,20 @@ static int mtk_mfg_send_ipi(struct mtk_mfg *mfg, struct mtk_mfg_ipi_msg *msg)
 
 	msg->magic = mfg->ipi_magic;
 
+	mutex_lock(&mfg->ipi_lock);
+	/* Drop any stale completion from a previous transaction. */
+	reinit_completion(&mfg->gf_mbox->rx_done);
+
 	ret = mbox_send_message(mfg->gf_mbox->ch, msg);
 	if (ret < 0) {
+		mutex_unlock(&mfg->ipi_lock);
 		dev_err(dev, "Cannot send GPUFreq IPI command: %pe\n", ERR_PTR(ret));
 		return ret;
 	}
 
 	wait = wait_for_completion_timeout(&mfg->gf_mbox->rx_done, msecs_to_jiffies(500));
 	if (!wait) {
+		mutex_unlock(&mfg->ipi_lock);
 		dev_err(dev, "GPUFreq IPI cmd=%u magic=0x%x TIMEOUT\n",
 			msg->cmd, mfg->ipi_magic);
 		return -ETIMEDOUT;
@@ -463,9 +472,12 @@ static int mtk_mfg_send_ipi(struct mtk_mfg *mfg, struct mtk_mfg_ipi_msg *msg)
 	msg = mfg->gf_mbox->rx_data;
 
 	if (msg->u.return_value < 0) {
-		dev_err(dev, "IPI return: %d\n", msg->u.return_value);
+		ret = msg->u.return_value;
+		mutex_unlock(&mfg->ipi_lock);
+		dev_err(dev, "IPI return: %d\n", ret);
 		return -EPROTO;
 	}
+	mutex_unlock(&mfg->ipi_lock);
 
 	return 0;
 }
@@ -1054,6 +1066,7 @@ static int mtk_mfg_probe(struct platform_device *pdev)
 
 	mfg->pdev = pdev;
 	mfg->variant = data;
+	mutex_init(&mfg->ipi_lock);
 
 	dev_set_drvdata(dev, mfg);
 

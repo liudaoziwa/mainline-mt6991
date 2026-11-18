@@ -161,6 +161,10 @@ static ssize_t fingerprint_write(struct file *filp, const char __user *buf, size
         retval = -EINVAL;
         return retval;
     }
+    if (spi_data.len == 0 || spi_data.len > 64 * 1024) {
+        FP_LOGI("%s: invalid transfer length %u\n", __func__, spi_data.len);
+        return -EINVAL;
+    }
     len = spi_data.len;
     if (len % 1024 != 0 && len > 1024) {
         len = ((spi_data.len / 1024) + 1) * 1024;
@@ -188,14 +192,18 @@ static ssize_t fingerprint_write(struct file *filp, const char __user *buf, size
         retval = -EFAULT;
         return retval;
     }
-    spi_sync_read_internal(spidev, tx_buf, rx_buf, len);
-    if (copy_to_user(spi_data.rx_buf, rx_buf, spi_data.len)) {
+    retval = spi_sync_read_internal(spidev, tx_buf, rx_buf, len);
+    if (retval < 0) {
+        FP_LOGI("%s: spi transfer failed %d\n", __func__, retval);
+    } else if (copy_to_user(spi_data.rx_buf, rx_buf, spi_data.len)) {
         FP_LOGI("Failed to copy gf_ioc_transfer_raw from kernel to user\n");
         retval = -EFAULT;
+    } else {
+        retval = spi_data.len;
     }
     kfree(tx_buf);
     kfree(rx_buf);
-    return spi_data.len;
+    return retval;
 }
 
 
@@ -407,6 +415,7 @@ static long fingerprint_ioctl(struct file *filp, unsigned int cmd, unsigned long
         break;
     default:
         FP_LOGI("unkonw type\n");
+        retval = -ENOTTY;
         break;
     }
     func_exit();
@@ -492,7 +501,7 @@ static int fingerprint_driver_probe(struct spi_device *spi)
     spidev->spi = spi;
     status = fp_parse_dts(spidev);
     if (status) {
-        goto fp_out;
+        goto fp_out_free;
     }
     spin_lock_init(&spidev->spi_lock);
     mutex_init(&spidev->buf_lock);
@@ -514,22 +523,17 @@ static int fingerprint_driver_probe(struct spi_device *spi)
     }
     mutex_unlock(&device_list_lock);
 
-    if (status == 0) {
-        spi_set_drvdata(spi, spidev);
-    } else {
-        kfree(spidev);
-    }
+    if (status != 0)
+        goto fp_out_free;
 
+    spi_set_drvdata(spi, spidev);
     wake_lock_init(&fp_wakelock, WAKE_LOCK_SUSPEND, "fp_wakelock");
     status = irq_setup(spidev);
-fp_out:
-    FP_LOGI("%s init status:%d", __func__, status);
-    return status;
-}
+    if (status == 0) {
+        FP_LOGI("%s init status:%d", __func__, status);
+        return 0;
+    }
 
-static void spidev_remove(struct spi_device *spi)
-{
-    struct spidev_data  *spidev = spi_get_drvdata(spi);
     spin_lock_irq(&spidev->spi_lock);
     spidev->spi = NULL;
     spi_set_drvdata(spi, NULL);
@@ -538,12 +542,42 @@ static void spidev_remove(struct spi_device *spi)
     list_del(&spidev->device_entry);
     device_destroy(fingerprint_class, spidev->devt);
     clear_bit(MINOR(spidev->devt), minors);
-    if (spidev->users == 0) {
-        kfree(spidev);
-    }
     mutex_unlock(&device_list_lock);
+    wake_lock_destroy(&fp_wakelock);
+fp_out_free:
+    kfree(spidev);
+    FP_LOGI("%s init status:%d", __func__, status);
+    return status;
+}
+
+static void spidev_remove(struct spi_device *spi)
+{
+    struct spidev_data  *spidev = spi_get_drvdata(spi);
+    bool dofree;
+
+    if (!spidev)
+        return;
+
+    /* Tear the interrupt down while spidev is still allocated. */
     if (spidev->irq > 0)
         irq_cleanup(spidev);
+
+    spin_lock_irq(&spidev->spi_lock);
+    spidev->spi = NULL;
+    spi_set_drvdata(spi, NULL);
+    spin_unlock_irq(&spidev->spi_lock);
+
+    mutex_lock(&device_list_lock);
+    list_del(&spidev->device_entry);
+    device_destroy(fingerprint_class, spidev->devt);
+    clear_bit(MINOR(spidev->devt), minors);
+    /* A still-open fd frees spidev from ree_spi_release(). */
+    dofree = (spidev->users == 0);
+    mutex_unlock(&device_list_lock);
+
+    if (dofree)
+        kfree(spidev);
+
     wake_lock_destroy(&fp_wakelock);
 }
 

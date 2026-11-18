@@ -1248,7 +1248,7 @@ static int tcm_parse_fw_image(const u8 *image, u32 image_size,
 		       (image[offset+2] << 16) | (image[offset+3] << 24);
 		offset += 4;
 
-		if (addr + FW_AREA_HDR_SIZE > image_size)
+		if (addr >= image_size || image_size - addr < FW_AREA_HDR_SIZE)
 			continue;
 		hdr = image + addr;
 
@@ -1274,7 +1274,7 @@ static int tcm_parse_fw_image(const u8 *image, u32 image_size,
 				(hdr[34] << 16) | (hdr[35] << 24);
 		area_data = hdr + FW_AREA_HDR_SIZE;
 
-		if (addr + FW_AREA_HDR_SIZE + area_len > image_size)
+		if (area_len > image_size - addr - FW_AREA_HDR_SIZE)
 			continue;
 
 		if (memcmp(hdr + 4, "APP_CODE", 8) == 0) {

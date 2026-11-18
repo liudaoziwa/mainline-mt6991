@@ -73,12 +73,27 @@ static void rmx6688_enable_i2s_conn(struct snd_soc_pcm_runtime *rtd)
 				      BIT(I_DL1_CH2), BIT(I_DL1_CH2));
 }
 
+static void rmx6688_disable_i2s_conn(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_component *cmpnt = snd_soc_rtd_to_cpu(rtd, 0)->component;
+
+	snd_soc_component_update_bits(cmpnt, AFE_CONN026_1, BIT(I_DL1_CH1), 0);
+	snd_soc_component_update_bits(cmpnt, AFE_CONN027_1, BIT(I_DL1_CH2), 0);
+}
+
 static int rmx6688_be_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 
 	rmx6688_enable_i2s_conn(rtd);
 	return 0;
+}
+
+static void rmx6688_be_shutdown(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+
+	rmx6688_disable_i2s_conn(rtd);
 }
 
 static int rmx6688_be_hw_params(struct snd_pcm_substream *substream,
@@ -93,6 +108,7 @@ static int rmx6688_be_hw_params(struct snd_pcm_substream *substream,
 
 static const struct snd_soc_ops rmx6688_be_ops = {
 	.startup = rmx6688_be_startup,
+	.shutdown = rmx6688_be_shutdown,
 	.hw_params = rmx6688_be_hw_params,
 };
 
@@ -135,10 +151,17 @@ static int rmx6688_adda_startup(struct snd_pcm_substream *substream)
 			continue;
 		ret = clk_prepare_enable(priv->adc_clks[i]);
 		if (ret)
-			return ret;
+			goto err;
 	}
 
 	return 0;
+
+err:
+	while (i--) {
+		if (priv->adc_clks[i])
+			clk_disable_unprepare(priv->adc_clks[i]);
+	}
+	return ret;
 }
 
 static void rmx6688_adda_shutdown(struct snd_pcm_substream *substream)
@@ -222,10 +245,12 @@ static int rmx6688_sound_probe(struct platform_device *pdev)
 	 */
 	for (i = 0; i < ARRAY_SIZE(rmx6688_adc_clks); i++) {
 		clk = devm_clk_get_optional(&pdev->dev, rmx6688_adc_clks[i]);
-		if (IS_ERR(clk))
-			return dev_err_probe(&pdev->dev, PTR_ERR(clk),
-					     "failed to get %s\n",
-					     rmx6688_adc_clks[i]);
+		if (IS_ERR(clk)) {
+			ret = dev_err_probe(&pdev->dev, PTR_ERR(clk),
+					    "failed to get %s\n",
+					    rmx6688_adc_clks[i]);
+			goto err_put_nodes;
+		}
 		priv->adc_clks[i] = clk;
 	}
 
@@ -312,6 +337,9 @@ static int rmx6688_sound_probe(struct platform_device *pdev)
 	if (ret)
 		dev_err_probe(&pdev->dev, ret, "failed to register sound card\n");
 
+err_put_nodes:
+	of_node_put(codec_l);
+	of_node_put(codec_r);
 	of_node_put(codec_mic);
 	return ret;
 }
