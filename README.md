@@ -18,7 +18,7 @@
 | WiFi | MT6653 (connv3, PCIe HIF):扫描/认证/关联/WPA2 四次握手/联网全部正常;conninfra+connadp+connfem+gen4m+PCIe 全量内建。**日志降噪**:`.is_en_sw_emi_read=FALSE` 关掉那条永不回 MSI 的 CB-DMA debug 读(`halMbuRead` 1698→0、EMI MPU 告警 18→0),`kalIsNoMmioReadReason` 不再成立 ⇒ debug dump 自动回退 MMIO,信息不丢 |
 | Connectivity 电源栈 | connv3/conninfra、connfem(FEM)、NVRAM 加载、自动上电 |
 | 电池电量计 | TI bq27541 @ i2c0 0x55;`/sys/class/power_supply/` 暴露容量/电压/电流/温度,GNOME 显示电量。只读。**i2c0 必须 100kHz**(400kHz 会超时读不到) |
-| 充电 (5V 标准) | MT6379(SPMI USID 0x0e):内核驱动(SPMI 控制器 + `mt6379_charger`)把 `AICR`/`ICHG` 提到 3A 并每 3s 轮询重设(抗拔插)。实测 `Charging` ~2.6A;**厂商快充(VOOC)未做** |
+| 充电 (5V 标准) | MT6379(SPMI USID 0x0e):内核驱动(SPMI 控制器 + `mt6379_charger`)把 `AICR`/`ICHG` 提到 3A 并每 500 ms 轮询重设(抗拔插)。实测 `Charging` ~2.6A;**厂商快充(VOOC)未做** |
 | PMIC 栈 | mt6363/mt6373/mt6368/mt6369 四颗全部 `pmic_mng_register_device ok`;connv3 PMIC(mt6373)注册成功;MT6379 eUSB2 repeater probe+power on。主线无 MTK PMIC MFD ⇒ 触摸 VTP 已由内核 `mt6991-pmic-early`(DT 序列 + bare SWINF,subsys_initcall)接管;MT6363 三轨 `md-rails` 已由同一个 pmic-early 的 DT 子节点接管(b42 验证 `already in the target state`,init 副本已删);MT6373 PIO1/2/VAUD18 + GPIO 复位(codec-en GPIO9)由 pmic-early 早期序列接管,init 副本已删(2026-10-17) |
 | 按键 (电源/音量) | 电源=MT6363 PWRKEY、音量上=MT6363 HOMEKEY(`mt6363-spmi-keys` 轮询 `TOPSTATUS`,因 MT6991 SPMI 无 IRQ domain);音量下=`gpio-keys` GPIO11。实机可用 |
 | SCP (RV33 tinysys) | 以模块形式跑:`scp.ko` / `ccci_fsm_scp.ko`(AP 侧 CCISM)/ `connscp.ko` / `clk-mt6991-drv.ko` / `sensorhub_probe.ko`。`SCP READY` + `freq=190`(DVFS 工作)、ULPOSC cali 通过、AP↔SCP IPI/CCISM 双向通;`scp_ap_ready` sysfs + init `wait_scp_ready()` 保证 modem 在 SCP 完全就绪后再启动 |
@@ -36,7 +36,7 @@
 | 蓝牙 (MT6653) | 正在从厂商 `bt/linux_v2` 改走**主线 BlueZ(`btmtk`/`btmtkuart`, serdev+H4+STP)**:驱动绑定、`hci0` 注册、connv3 电源、MT6653 握手代码均已实现;但 BT UART 经 **UARTHUB**,AP 第一帧始终无回应(`query uart failed -110`)。引脚复用/复位/uarthub 放行序列厂商 pre_on 顺序均已试过,疑点转向 uarthub 数据面与 connv3 上电竞争 |
 | WiFi 热点 (SoftAP) | 开放 AP + NAT 可用(`GT7-Open`);**WPA2 4-way 仍失败**;为避免影响正常启动已 `systemctl disable hotspot`。详见 `doc/CONNECTIVITY_PORT_NOTES.md` §13.7 |
 | 数据面(上网) | ModemManager 控制面(握手/注册/APN profile/`mobile_data`)已通,modem 也已注册在 5G NR(`+C5GREG: 0,1`;`AT+CGDCONT?` 裸 `OK` = AP 从未配过 APN);但 `DATA_ACT` 被 modem 本地拒(`D2CPM_INVAL_ARG/NOT_PERM/NW_UNKNOWN`),`AT+CGACT=1,0` 报同一个 cause ⇒ 门槛在 modem 侧状态、与 MIPC payload 无关。缺 RIL 等价物给 ccmni 配地址 |
-| 系统 suspend/resume | 电源域下电会丢 bootloader 状态(MIPI TX PHY、blender 链、SMMU、唤醒源均未自包含) |
+| 系统 suspend/resume | 只支持 `s2idle`;`pm_test` 实测 `devices` 阶段卡死(第二个设备的 suspend 回调),深睡 `mem` 未做。详见 `doc/KEYS_SUSPEND_NOTES.md` §3.6 |
 | 快充 VOOC/SuperVOOC | 需电荷泵 `mt6379_2p`(i2c3 0x53)+专有协议+OPPO 框架;当前仅 5V 标准充电 |
 | GPS | **内核侧 100% 打通**(`gps_drv_dl_v062` + DTS `gps@40c00000` + connv2 上电 WDT 修复;chipid/MCU/GDL 链路全通);卡在厂商 userspace(`mnld` 依赖 Android binder)。详见 `doc/GPS_PORT_NOTES.md` |
 | 冷启动无 LK 显示 | 依赖 bootloader 显示的中间级(PHY/mutex/blender)尚未由主线完整接管 |
@@ -52,7 +52,7 @@
 | 语音通话 / VoLTE | 依赖 modem 语音 + MT6681 通话音频 + IMS/RIL;未做 |
 | 双卡 / DSDS(SIM2) | FDT 有 `oplus,sim_detect`;目前只在单卡上验证过,SIM2/双卡未验证 |
 | USB-C DP Alt Mode / 外接显示 | FDT 有 `usb-dp-selector`/`dptx`/`edp-tx`;当前 USB-C 只做 host 数据,未移植 DP/eDP,外接屏未验证 |
-| USB device / gadget 模式 | 当前 `USB_MTU3_HOST=y` + mtk-xhci,只能做 host;要 adb/MTP/RNDIS 需重新启用 gadget(早期 CDC-ACM 见 `doc/usb-gadget-progress-summary.md`) |
+| USB device / gadget 模式 | 当前 `USB_MTU3_HOST=y` + mtk-xhci,只能做 host;要 adb/MTP/RNDIS 需重新启用 gadget(早期 CDC-ACM 见 `doc/archive/usb-gadget-progress-summary.md`) |
 | 硬件 RTC / 定时唤醒 | FDT 有 `mediatek,mt6685-rtc`(SPMI MT6685 MFD),无驱动 ⇒ 开机时间不持久、`wakealarm`/定时开机不可用 |
 
 ## 布局
