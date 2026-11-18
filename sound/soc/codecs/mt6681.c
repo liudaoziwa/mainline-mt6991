@@ -17909,6 +17909,19 @@ static int mt6681_mtkaif_stress_get(struct snd_kcontrol *kcontrol,
 }
 
 static int mt6681_codec_init_reg(struct mt6681_priv *priv);
+/*
+ * The CLH LUT control is a one-shot trigger (the set callback just re-runs
+ * the codec register init).  It still needs a get callback: without one ALSA
+ * returns -EPERM for ELEM_READ, which makes snd_mixer_open() (and therefore
+ * PipeWire/WirePlumber) fail to load the card mixer.
+ */
+static int mt6681_clh_lut0_1_get(struct snd_kcontrol *kcontrol,
+				 struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.enumerated.item[0] = 0;
+	return 0;
+}
+
 static int mt6681_clh_lut0_1_set(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_value *ucontrol)
 {
@@ -18030,7 +18043,7 @@ static const struct snd_kcontrol_new mt6681_snd_misc_controls[] = {
 #endif
 	SOC_ENUM_EXT("Pmic_Mtkaif_Stress_Switch", misc_control_enum[0],
 		     mt6681_mtkaif_stress_get, mt6681_mtkaif_stress_set),
-	SOC_ENUM_EXT("CLH_LUT0_1", misc_control_enum[0], NULL,
+	SOC_ENUM_EXT("CLH_LUT0_1", misc_control_enum[0], mt6681_clh_lut0_1_get,
 		     mt6681_clh_lut0_1_set),
 	SOC_ENUM_EXT("Codec_HwGain_Enable", misc_control_enum[0],
 		     hwgain_enable_get,
@@ -35789,7 +35802,7 @@ static int mt6681_parse_dt(struct mt6681_priv *priv)
 	priv->ldo_counter = 0;
 #if IS_ENABLED(CONFIG_REGULATOR_MT6681)
 	priv->reg_vaud18 = devm_regulator_get_optional(dev, "reg-vaud18");
-	ret = IS_ERR(priv->reg_vaud18);
+	ret = PTR_ERR_OR_ZERO(priv->reg_vaud18);
 	if (ret) {
 		dev_info(dev, "%s() Get regulator failed (%d)\n",
 			 __func__, ret);
@@ -35797,6 +35810,14 @@ static int mt6681_parse_dt(struct mt6681_priv *priv)
 	}
 #endif
 	return 0;
+}
+
+static void mt6681_debugfs_remove(void *data)
+{
+	struct mt6681_priv *priv = data;
+
+	debugfs_remove(priv->debugfs);
+	priv->debugfs = NULL;
 }
 
 static int mt6681_platform_driver_probe(struct platform_device *pdev)
@@ -35834,9 +35855,17 @@ static int mt6681_platform_driver_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	/* create debugfs file */
+	/* create debugfs file (removed automatically on unbind) */
 	priv->debugfs = debugfs_create_file("mtksocanaaudio", S_IFREG | 0444,
 					    NULL, priv, &mt6681_debugfs_ops);
+	if (IS_ERR(priv->debugfs)) {
+		ret = PTR_ERR(priv->debugfs);
+		priv->debugfs = NULL;
+		return ret;
+	}
+	ret = devm_add_action_or_reset(&pdev->dev, mt6681_debugfs_remove, priv);
+	if (ret)
+		return ret;
 
 	ret = mt6681_parse_dt(priv);
 	if (ret) {
